@@ -1001,6 +1001,17 @@ def construir_editor_xml(estado, editores, resultado):
             ed['historico'][:] = ed['historico'][-50:]
             ed['futuro'].clear()
         ed['texto_atual'] = novo_texto
+        # Reset completo do conteúdo do editor: limpamos primeiro e só depois
+        # preenchemos com o texto final. O CodeMirror do NiceGUI, ao receber
+        # um novo valor vindo do servidor, tenta aplicar apenas a "região
+        # modificada" (para preservar a posição do cursor) em vez de
+        # substituir o documento inteiro. Em edições grandes ou que tocam
+        # várias partes do texto (como "Substituir todos"), esse cálculo de
+        # patch parcial pode ocasionalmente dessincronizar o texto realmente
+        # armazenado no editor do texto exibido na tela. Forçar uma limpeza
+        # antes evita esse cálculo de patch (é sempre tratado como "inserir
+        # tudo do zero"), eliminando o risco de dessincronia.
+        editor.set_value('')
         editor.set_value(novo_texto)
         atualizar_interface()
 
