@@ -39,6 +39,11 @@ from nicegui import ui
 # NAMESPACES E HELPERS TISS (idêntico à versão Streamlit)
 # ==========================================
 NS = {'ans': 'http://www.ans.gov.br/padroes/tiss/schemas'}
+# Registra o prefixo 'ans' globalmente no ElementTree. Sem isso, ao reescrever
+# o XML, o ElementTree ignora o prefixo original do documento e gera um
+# genérico (ns0, ns1...) para qualquer namespace que encontrar — o conteúdo
+# fica correto, mas o texto do arquivo muda de <ans:...> para <ns0:...>.
+ET.register_namespace('ans', NS['ans'])
 
 def ans_tag(tag_name): return f"{{{NS['ans']}}}{tag_name}"
 
