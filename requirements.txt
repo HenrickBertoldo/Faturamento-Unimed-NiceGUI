@@ -1,4 +1,4 @@
-nicegui
-pandas
-gspread
-google-auth
+nicegui==3.17.1
+pandas==3.0.3
+gspread==6.2.1
+google-auth==2.58.0
