@@ -981,7 +981,17 @@ def construir_editor_xml(estado, editores, resultado):
     chave = (lote_id, nome_arquivo)
 
     if chave not in editores:
-        xml_texto = resultado['xml_bytes'].decode('ISO-8859-1')
+        # Carregamos o texto no editor sempre com quebras de linha \n (padrão
+        # que o CodeMirror usa internamente). O arquivo processado vem com
+        # \r\n (CRLF), e se deixássemos esse \r a mais em cada linha, ele cria
+        # um descompasso entre "quantos caracteres o Python conta até um
+        # ponto do texto" e "quantos caracteres o CodeMirror conta até esse
+        # mesmo ponto" — um desvio que cresce a cada quebra de linha anterior
+        # e pode fazer uma edição feita numa posição do texto ser aplicada
+        # ligeiramente deslocada. O \r\n é reaplicado de qualquer forma na
+        # hora de gerar o arquivo final (recalcular_hash_e_serializar), então
+        # removê-lo aqui não afeta o arquivo salvo, só a edição em tela.
+        xml_texto = resultado['xml_bytes'].decode('ISO-8859-1').replace('\r\n', '\n')
         editores[chave] = {
             'texto_original': xml_texto,
             'texto_base': xml_texto,
