@@ -871,11 +871,11 @@ def pagina_principal():
 # ==========================================================================
 def construir_aba_processamento(estado, editores):
 
-    def ao_receber_upload(e):
-        conteudo = e.content.read()
-        estado['arquivos_pendentes'].append((e.name, conteudo))
-        label_pendentes.text = f"📁 {len(estado['arquivos_pendentes'])} arquivo(s) selecionado(s)."
-
+   def ao_receber_upload(e):
+    conteudo = e.file.read()
+    estado['arquivos_pendentes'].append((e.file.name, conteudo))
+    label_pendentes.text = f"📁 {len(estado['arquivos_pendentes'])} arquivo(s) selecionado(s)."
+       
     with ui.card().classes('w-full'):
         ui.label('📜 Processamento de XMLs em Lote').classes('text-lg font-bold')
         ui.label('Arraste um ou vários arquivos XML gerados pelo seu sistema.').classes('text-sm text-gray-600')
