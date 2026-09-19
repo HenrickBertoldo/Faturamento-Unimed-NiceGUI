@@ -1040,7 +1040,7 @@ def construir_editor_xml(estado, editores, resultado):
             status_alteracoes = ui.label()
             status_hash = ui.html()
 
-        with ui.expander('📝 Ver Detalhes das Modificações Automáticas').classes('w-full'):
+        with ui.expansion('📝 Ver Detalhes das Modificações Automáticas').classes('w-full'):
             aud = resultado.get('auditoria') or {}
             tem_alteracao = False
             for chave_aud, lista_logs in aud.items():
