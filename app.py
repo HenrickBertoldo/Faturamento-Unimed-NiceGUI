@@ -97,18 +97,60 @@ CREDENCIAIS_PATH = os.path.join(PASTA_SCRIPT, "credentials.json")
 CONFIG_PATH = os.path.join(PASTA_SCRIPT, "config.json")
 _SCOPES_SHEETS = ["https://www.googleapis.com/auth/spreadsheets"]
 
+def _carregar_credenciais_service_account():
+    """Procura a credencial do Google nesta ordem (cobre os 3 jeitos mais
+    comuns de rodar esta aplicação):
+    1. Variável de ambiente GOOGLE_CREDENTIALS_JSON — contendo o JSON inteiro
+       da chave (usada em plataformas como Hugging Face Spaces);
+    2. Secret File do Render, sempre montado em /etc/secrets/credentials.json;
+    3. Arquivo credentials.json na mesma pasta deste script (uso local, no
+       seu computador).
+    Retorna (credentials_ou_None, mensagem_de_erro_ou_None)."""
+    conteudo_env = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+    if conteudo_env:
+        try:
+            info = json.loads(conteudo_env)
+            return Credentials.from_service_account_info(info, scopes=_SCOPES_SHEETS), None
+        except Exception as e:
+            return None, f"Variável de ambiente GOOGLE_CREDENTIALS_JSON inválida: {e}"
+
+    for caminho in ["/etc/secrets/credentials.json", CREDENCIAIS_PATH]:
+        if os.path.isfile(caminho):
+            try:
+                return Credentials.from_service_account_file(caminho, scopes=_SCOPES_SHEETS), None
+            except Exception as e:
+                return None, f"Falha ao ler credenciais em {caminho}: {e}"
+
+    return None, ("Nenhuma credencial do Google encontrada. Configure a variável de ambiente "
+                   "GOOGLE_CREDENTIALS_JSON, ou um Secret File 'credentials.json' (Render), ou "
+                   "coloque um arquivo credentials.json na pasta da aplicação (uso local).")
+
+def _obter_spreadsheet_url():
+    """Procura o link da planilha nesta ordem: variável de ambiente
+    SPREADSHEET_URL, depois o arquivo config.json local."""
+    url_env = os.environ.get("SPREADSHEET_URL")
+    if url_env:
+        return url_env, None
+    if os.path.isfile(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, encoding='utf-8') as f:
+                return json.load(f)['spreadsheet_url'], None
+        except Exception as e:
+            return None, f"Falha ao ler config.json: {e}"
+    return None, "Defina a variável de ambiente SPREADSHEET_URL, ou crie um config.json na pasta da aplicação."
+
 def _conectar_planilha():
     """Retorna o objeto da planilha (gspread Spreadsheet), ou None se as
     credenciais/config ainda não foram configuradas ou a conexão falhar."""
-    if not (os.path.isfile(CREDENCIAIS_PATH) and os.path.isfile(CONFIG_PATH)):
-        return None, "credentials.json ou config.json não encontrados na pasta da aplicação."
+    creds, erro_cred = _carregar_credenciais_service_account()
+    if creds is None:
+        return None, erro_cred
+    url, erro_url = _obter_spreadsheet_url()
+    if url is None:
+        return None, erro_url
     try:
-        with open(CONFIG_PATH, encoding='utf-8') as f:
-            config = json.load(f)
-        creds = Credentials.from_service_account_file(CREDENCIAIS_PATH, scopes=_SCOPES_SHEETS)
         gc = gspread.authorize(creds)
-        ref = config['spreadsheet_url']
-        sh = gc.open_by_url(ref) if ref.startswith('http') else gc.open_by_key(ref)
+        sh = gc.open_by_url(url) if url.startswith('http') else gc.open_by_key(url)
         return sh, None
     except Exception as e:
         return None, str(e)
