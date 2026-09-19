@@ -1058,9 +1058,9 @@ def construir_editor_xml(estado, editores, resultado):
         label_arquivo.text = f"{nome_arquivo} *" if alterado else nome_arquivo
         label_arquivo.classes(replace='tiss-file-name modificado' if alterado else 'tiss-file-name')
 
-        botao_salvar_header.props(f"{'disable' if not alterado else ''}")
-        botao_desfazer.props(f"{'disable' if not ed['historico'] else ''}")
-        botao_refazer.props(f"{'disable' if not ed['futuro'] else ''}")
+        botao_salvar_header.set_enabled(alterado)
+        botao_desfazer.set_enabled(bool(ed['historico']))
+        botao_refazer.set_enabled(bool(ed['futuro']))
 
         painel_alteracoes.clear()
         alteracoes = calcular_diff_alteracoes(ed['texto_base'], ed['texto_atual']) if alterado else []
