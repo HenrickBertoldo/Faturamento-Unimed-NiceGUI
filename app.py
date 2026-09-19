@@ -871,8 +871,8 @@ def pagina_principal():
 # ==========================================================================
 def construir_aba_processamento(estado, editores):
 
-    def ao_receber_upload(e):
-        conteudo = e.file.read()
+   async def ao_receber_upload(e):
+    conteudo = await e.file.read()
         estado['arquivos_pendentes'].append((e.file.name, conteudo))
         label_pendentes.text = f"📁 {len(estado['arquivos_pendentes'])} arquivo(s) selecionado(s)."
 
