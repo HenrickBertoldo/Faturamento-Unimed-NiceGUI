@@ -26,6 +26,7 @@ import html
 import hashlib
 import zipfile
 import difflib
+import secrets
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 
@@ -1282,4 +1283,15 @@ def construir_tabela_regra(estado, aba):
         ui.button('💾 Gravar Alterações na Nuvem', on_click=salvar_na_nuvem, color='primary')
 
 
-ui.run(title='Validador TISS', port=8080, reload=False, show=True, storage_secret='troque-esta-chave-antes-de-publicar')
+ui.run(
+    title='Validador TISS',
+    port=int(os.environ.get('PORT', 8080)),
+    reload=False,
+    show=False,  # não há navegador local para abrir num servidor publicado
+    # Em produção, defina a variável de ambiente STORAGE_SECRET com um valor
+    # aleatório e secreto. Sem isso, é gerado um novo a cada reinício (o que
+    # significa que sessões de navegador abertas antes de um redeploy perdem
+    # o estado — aceitável para esta aplicação, mas configure STORAGE_SECRET
+    # se quiser evitar isso).
+    storage_secret=os.environ.get('STORAGE_SECRET') or secrets.token_hex(16),
+)
