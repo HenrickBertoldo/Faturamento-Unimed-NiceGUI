@@ -566,21 +566,30 @@ def processar_xml_tiss(arquivo_xml, dfs):
                         regra_p = dict_procedimentos[cod_p]
                         detalhes_proc = []
                         
-                        grau_val = limpar_numero(regra_p.get('Grau Part Obrigatório', ''))
-                        if grau_val:
-                            for eq in equipes_restantes:
-                                target_node = eq if tag_limpa(eq) == 'equipeSadt' else (eq.find('ans:identificacaoEquipe', NS) or eq)
-                                grau_elem = target_node.find('ans:grauPart', NS)
-                                if grau_elem is not None: grau_elem.text = grau_val
-                                else:
-                                    grau_elem = ET.Element(ans_tag('grauPart'))
-                                    grau_elem.text = grau_val
-                                    target_node.insert(0, grau_elem)
-                                
-                                for parent in eq.iter():
-                                    for bad_grau in parent.findall('ans:grauParticipacao', NS): parent.remove(bad_grau)
-                                        
-                            detalhes_proc.append(f"Grau inserido: {grau_val}")
+                        grau_val_bruto = str(regra_p.get('Grau Part Obrigatório', '')).strip().upper()
+                        if grau_val_bruto == 'EXCLUIR':
+                            qtd_equipe_removida = len(equipes_restantes)
+                            for eq in list(equipes_restantes):
+                                proc_exec.remove(eq)
+                            equipes_restantes = []
+                            if qtd_equipe_removida:
+                                detalhes_proc.append(f"Equipe do procedimento excluída ({qtd_equipe_removida} profissional(is) removido(s))")
+                        else:
+                            grau_val = limpar_numero(grau_val_bruto)
+                            if grau_val:
+                                for eq in equipes_restantes:
+                                    target_node = eq if tag_limpa(eq) == 'equipeSadt' else (eq.find('ans:identificacaoEquipe', NS) or eq)
+                                    grau_elem = target_node.find('ans:grauPart', NS)
+                                    if grau_elem is not None: grau_elem.text = grau_val
+                                    else:
+                                        grau_elem = ET.Element(ans_tag('grauPart'))
+                                        grau_elem.text = grau_val
+                                        target_node.insert(0, grau_elem)
+                                    
+                                    for parent in eq.iter():
+                                        for bad_grau in parent.findall('ans:grauParticipacao', NS): parent.remove(bad_grau)
+                                            
+                                detalhes_proc.append(f"Grau inserido: {grau_val}")
                             
                         quantidade_elem = proc_exec.find('ans:quantidadeExecutada', NS)
                         indent_tail = quantidade_elem.tail if quantidade_elem is not None else None
