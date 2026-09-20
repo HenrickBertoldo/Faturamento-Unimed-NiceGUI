@@ -65,8 +65,18 @@ def limpar_numero(valor):
     return v
 
 def padronizar_codigo_8_digitos(cod):
+    """Garante 8 dígitos num código totalmente numérico, repondo à esquerda
+    quantos zeros forem necessários. Isso importa porque, quando uma célula
+    do Google Sheets é interpretada como número (em vez de texto), TODOS os
+    zeros à esquerda são descartados — não só um. Um código como '00146803'
+    (dois zeros à esquerda) vira '146803' na planilha; a versão antiga desta
+    função só sabia repor exatamente 1 zero (caso de 7 dígitos), então um
+    código que perdeu 2 zeros ou mais nunca voltava a bater com o mesmo
+    código extraído do XML, e a substituição na tabela 'itens' (ou em
+    qualquer outra tabela que use códigos de 8 dígitos) ficava sem efeito
+    silenciosamente."""
     c = limpar_numero(cod)
-    return "0" + c if len(c) == 7 and c.isdigit() else c
+    return c.zfill(8) if c.isdigit() and len(c) < 8 else c
 
 
 # ==========================================
@@ -1167,24 +1177,48 @@ def construir_editor_xml(estado, editores, resultado):
         }
     ed = editores[chave]
 
+    # Sinaliza que a próxima mudança de valor do editor (CodeMirror) foi
+    # feita pelo próprio código (desfazer, refazer, salvar, recarregar,
+    # substituir), e não por digitação do usuário. Isso é necessário porque
+    # editor.set_value(...) dispara o mesmo evento on_value_change que uma
+    # tecla digitada dispararia — sem esse sinalizador, um "Desfazer" faria
+    # a lógica de checkpoint de undo (em ao_digitar) tratar o próprio
+    # desfazer como se fosse uma edição nova, empilhando de volta o estado
+    # que acabou de ser removido do histórico.
+    _evento_editor = {'ignorar_proximo': False}
+
+    def _repor_valor_editor(texto):
+        """Substitui todo o conteúdo do editor programaticamente. Limpamos
+        primeiro e só depois preenchemos com o texto final: o CodeMirror do
+        NiceGUI, ao receber um novo valor vindo do servidor, tenta aplicar
+        apenas a "região modificada" (para preservar a posição do cursor)
+        em vez de substituir o documento inteiro. Em edições grandes ou que
+        tocam várias partes do texto (como desfazer/refazer ou "Substituir
+        todos"), esse cálculo de patch parcial pode ocasionalmente
+        dessincronizar o texto realmente armazenado no editor do texto
+        exibido na tela. Forçar uma limpeza antes evita esse cálculo de
+        patch (é sempre tratado como "inserir tudo do zero"), eliminando o
+        risco de dessincronia.
+        """
+        _evento_editor['ignorar_proximo'] = True
+        editor.set_value('')
+        _evento_editor['ignorar_proximo'] = True
+        editor.set_value(texto)
+        # Qualquer reposição programática do conteúdo fecha a rajada de
+        # digitação em andamento (se houver), para que a próxima tecla
+        # digitada comece um novo checkpoint de desfazer a partir daqui —
+        # sem isso, um "Salvar" ou "Substituir todos" feito no meio de uma
+        # pausa de digitação poderia ficar "escondido" entre dois pontos do
+        # histórico de desfazer.
+        _debounce['em_rajada'] = False
+
     def definir_conteudo(novo_texto, empilhar_undo=True):
         if empilhar_undo:
             ed['historico'].append(ed['texto_atual'])
             ed['historico'][:] = ed['historico'][-50:]
             ed['futuro'].clear()
         ed['texto_atual'] = novo_texto
-        # Reset completo do conteúdo do editor: limpamos primeiro e só depois
-        # preenchemos com o texto final. O CodeMirror do NiceGUI, ao receber
-        # um novo valor vindo do servidor, tenta aplicar apenas a "região
-        # modificada" (para preservar a posição do cursor) em vez de
-        # substituir o documento inteiro. Em edições grandes ou que tocam
-        # várias partes do texto (como "Substituir todos"), esse cálculo de
-        # patch parcial pode ocasionalmente dessincronizar o texto realmente
-        # armazenado no editor do texto exibido na tela. Forçar uma limpeza
-        # antes evita esse cálculo de patch (é sempre tratado como "inserir
-        # tudo do zero"), eliminando o risco de dessincronia.
-        editor.set_value('')
-        editor.set_value(novo_texto)
+        _repor_valor_editor(novo_texto)
         atualizar_interface()
 
     with ui.column().classes('w-full gap-2 mt-2'):
@@ -1305,19 +1339,46 @@ def construir_editor_xml(estado, editores, resultado):
             atualizar_painel_diff(alterado)
 
     # ---------------- Eventos ----------------
-    _debounce = {'timer': None}
+    _debounce = {'timer': None, 'em_rajada': False}
+
+    def _fim_da_rajada(alterado):
+        # Marca o fim da pausa de digitação: a próxima tecla começa uma nova
+        # rajada (e portanto um novo checkpoint de desfazer).
+        _debounce['em_rajada'] = False
+        atualizar_painel_diff(alterado)
 
     def ao_digitar(e):
+        # Mudança de valor disparada pelo próprio código (desfazer, refazer,
+        # salvar, recarregar, substituir) — não é digitação do usuário e não
+        # deve mexer no histórico de desfazer nem reagendar o diff.
+        if _evento_editor['ignorar_proximo']:
+            _evento_editor['ignorar_proximo'] = False
+            return
+
+        if not _debounce['em_rajada']:
+            # Início de uma nova rajada de digitação: guarda o texto de
+            # ANTES dela como ponto de desfazer. Sem isso, digitar
+            # diretamente no editor nunca alimentava o histórico — só ações
+            # como "Substituir" ou "Recarregar" passavam por
+            # definir_conteudo(), então os botões Desfazer/Refazer ficavam
+            # sempre desabilitados (ou sem efeito) depois de uma edição
+            # comum de texto.
+            ed['historico'].append(ed['texto_atual'])
+            ed['historico'][:] = ed['historico'][-50:]
+            ed['futuro'].clear()
+            _debounce['em_rajada'] = True
+
         ed['texto_atual'] = e.value
         # Atualização leve (label, botões, validade, status) a cada tecla —
         # é barata. O recálculo do diff (caro) é adiado: se o usuário digitar
         # de novo antes de 0.5s passar, o cálculo pendente é cancelado e
         # reagendado, então só roda de fato quando a digitação faz uma pausa.
+        # É também essa mesma pausa que fecha a rajada atual do undo.
         alterado = ed['texto_atual'] != ed['texto_base']
         atualizar_interface(recalcular_diff=False)
         if _debounce['timer']:
             _debounce['timer'].deactivate()
-        _debounce['timer'] = ui.timer(0.5, lambda: atualizar_painel_diff(alterado), once=True)
+        _debounce['timer'] = ui.timer(0.5, lambda: _fim_da_rajada(alterado), once=True)
     editor.on_value_change(ao_digitar)
 
     def salvar(_=None):
@@ -1347,7 +1408,7 @@ def construir_editor_xml(estado, editores, resultado):
             ed['futuro'].append(ed['texto_atual'])
             anterior = ed['historico'].pop()
             ed['texto_atual'] = anterior
-            editor.set_value(anterior)
+            _repor_valor_editor(anterior)
             atualizar_interface()
     botao_desfazer.on('click', desfazer)
 
@@ -1356,7 +1417,7 @@ def construir_editor_xml(estado, editores, resultado):
             ed['historico'].append(ed['texto_atual'])
             proximo = ed['futuro'].pop()
             ed['texto_atual'] = proximo
-            editor.set_value(proximo)
+            _repor_valor_editor(proximo)
             atualizar_interface()
     botao_refazer.on('click', refazer)
 
