@@ -844,6 +844,21 @@ ui.add_head_html("""
     .diff-campo { color: #1f2937; font-weight: 600; }
     .diff-valores { color: #4b5563; font-family: 'Consolas', monospace; font-size: 11.5px; }
 </style>
+<script>
+    // Aviso nativo do navegador ao tentar fechar/recarregar a aba com
+    // alterações não salvas no editor de XML. O Python atualiza
+    // window.__validadorTissAlterado a cada mudança de estado do editor
+    // (veja atualizar_interface() em construir_editor_xml); aqui só ligamos
+    // o listener uma única vez, no carregamento da página.
+    window.__validadorTissAlterado = false;
+    window.addEventListener('beforeunload', function (e) {
+        if (window.__validadorTissAlterado) {
+            e.preventDefault();
+            e.returnValue = '';
+            return '';
+        }
+    });
+</script>
 """, shared=True)
 
 
@@ -929,12 +944,31 @@ def construir_aba_processamento(estado, editores):
             barra.visible = False
             painel_resultados.refresh()
 
-        async def limpar_lista_processados():
-            estado['resultados_lote'] = []
-            estado['arquivo_selecionado'] = None
-            estado['lote_id'] += 1
-            painel_resultados.refresh()
-            ui.notify('Lista de arquivos processados limpa.', type='info')
+        def limpar_lista_processados():
+            def confirmar_limpeza():
+                estado['resultados_lote'] = []
+                estado['arquivo_selecionado'] = None
+                estado['lote_id'] += 1
+                painel_resultados.refresh()
+                ui.notify('Lista de arquivos processados limpa.', type='info')
+                dialogo_limpar.close()
+
+            tem_edicao_pendente = any(
+                ed['texto_atual'] != ed['texto_base'] for ed in editores.values()
+            )
+            if not tem_edicao_pendente:
+                confirmar_limpeza()
+                return
+
+            with ui.dialog() as dialogo_limpar, ui.card():
+                ui.label('Limpar lista com alterações não salvas?').classes('text-base font-bold')
+                ui.label('Pelo menos um dos arquivos processados tem edições que ainda não foram '
+                          'salvas. Limpar a lista agora descarta essas edições.') \
+                    .classes('text-sm text-gray-600')
+                with ui.row().classes('w-full justify-end gap-2 mt-2'):
+                    ui.button('Cancelar', on_click=dialogo_limpar.close).props('flat')
+                    ui.button('Limpar mesmo assim', color='negative', on_click=confirmar_limpeza)
+            dialogo_limpar.open()
 
         with ui.row().classes('w-full mt-2 gap-2 no-wrap'):
             ui.button('🚀 Iniciar Correção Automática', on_click=iniciar_correcao, color='primary').classes('flex-grow')
@@ -1112,15 +1146,15 @@ def construir_editor_xml(estado, editores, resultado):
                 ui.label('Nenhuma alteração foi necessária neste XML.').classes('text-sm text-gray-500')
 
     # ---------------- Atualização da interface ----------------
-    def atualizar_interface():
-        alterado = ed['texto_atual'] != ed['texto_base']
-        label_arquivo.text = f"{nome_arquivo} *" if alterado else nome_arquivo
-        label_arquivo.classes(replace='tiss-file-name modificado' if alterado else 'tiss-file-name')
-
-        botao_salvar_header.set_enabled(alterado)
-        botao_desfazer.set_enabled(bool(ed['historico']))
-        botao_refazer.set_enabled(bool(ed['futuro']))
-
+    def atualizar_painel_diff(alterado):
+        """Recalcula e redesenha o painel 'ALTERAÇÕES'. Isolado à parte porque
+        é a operação mais cara aqui (roda um diff linha a linha no arquivo
+        inteiro) — em XMLs grandes (1000+ linhas), rodar isso a cada tecla
+        digitada pode deixar a digitação com uma leve travada. Por isso, ao
+        digitar, essa função é chamada com atraso (debounce) em vez de a
+        cada tecla; nas outras ações (desfazer, salvar, recarregar,
+        substituir) ela roda imediatamente, já que são ações pontuais, não
+        contínuas."""
         painel_alteracoes.clear()
         alteracoes = calcular_diff_alteracoes(ed['texto_base'], ed['texto_atual']) if alterado else []
         with painel_alteracoes:
@@ -1137,6 +1171,18 @@ def construir_editor_xml(estado, editores, resultado):
                     """)
             else:
                 ui.label('Nenhuma alteração realizada.').classes('text-sm text-gray-500')
+        status_alteracoes.text = (f"⚠ {len(alteracoes)} alteração(ões) não salva(s)" if alterado
+                                   else ("💾 Alterações salvas" if ed['salvo_alguma_vez'] else "Sem alterações"))
+        status_alteracoes.classes(replace='text-amber-700 font-semibold' if alterado else 'text-gray-600')
+
+    def atualizar_interface(recalcular_diff=True):
+        alterado = ed['texto_atual'] != ed['texto_base']
+        label_arquivo.text = f"{nome_arquivo} *" if alterado else nome_arquivo
+        label_arquivo.classes(replace='tiss-file-name modificado' if alterado else 'tiss-file-name')
+
+        botao_salvar_header.set_enabled(alterado)
+        botao_desfazer.set_enabled(bool(ed['historico']))
+        botao_refazer.set_enabled(bool(ed['futuro']))
 
         try:
             ET.fromstring(ed['texto_atual'].encode('ISO-8859-1'))
@@ -1148,19 +1194,33 @@ def construir_editor_xml(estado, editores, resultado):
 
         status_arquivo.text = html.escape(nome_arquivo)
         status_linhas.text = f"{len(ed['texto_atual'].splitlines())} linhas"
-        status_alteracoes.text = (f"⚠ {len(alteracoes)} alteração(ões) não salva(s)" if alterado
-                                   else ("💾 Alterações salvas" if ed['salvo_alguma_vez'] else "Sem alterações"))
-        status_alteracoes.classes(replace='text-amber-700 font-semibold' if alterado else 'text-gray-600')
 
         hash_dif = ed['hash_atual'] != ed['hash_original']
         cor = 'color:#b45309;font-weight:600' if hash_dif else 'color:#374151'
         status_hash.content = (f"Hash original: <code>{ed['hash_original'] or '—'}</code> &nbsp;|&nbsp; "
                                 f"<span style='{cor}'>Hash atual: <code>{ed['hash_atual'] or '—'}</code></span>")
 
+        # Liga/desliga o aviso nativo do navegador de "sair sem salvar"
+        # (registrado uma vez no <head> da página; aqui só atualizamos a flag).
+        ui.run_javascript(f"window.__validadorTissAlterado = {str(alterado).lower()};")
+
+        if recalcular_diff:
+            atualizar_painel_diff(alterado)
+
     # ---------------- Eventos ----------------
+    _debounce = {'timer': None}
+
     def ao_digitar(e):
         ed['texto_atual'] = e.value
-        atualizar_interface()
+        # Atualização leve (label, botões, validade, status) a cada tecla —
+        # é barata. O recálculo do diff (caro) é adiado: se o usuário digitar
+        # de novo antes de 0.5s passar, o cálculo pendente é cancelado e
+        # reagendado, então só roda de fato quando a digitação faz uma pausa.
+        alterado = ed['texto_atual'] != ed['texto_base']
+        atualizar_interface(recalcular_diff=False)
+        if _debounce['timer']:
+            _debounce['timer'].deactivate()
+        _debounce['timer'] = ui.timer(0.5, lambda: atualizar_painel_diff(alterado), once=True)
     editor.on_value_change(ao_digitar)
 
     def salvar(_=None):
@@ -1204,10 +1264,28 @@ def construir_editor_xml(estado, editores, resultado):
     botao_refazer.on('click', refazer)
 
     def recarregar(_=None):
-        definir_conteudo(ed['texto_original'])
-        ed['historico'].clear()
-        ed['futuro'].clear()
-        ui.notify('XML recarregado ao estado processado automaticamente.', type='info')
+        def confirmar_recarregar():
+            definir_conteudo(ed['texto_original'])
+            ed['historico'].clear()
+            ed['futuro'].clear()
+            ui.notify('XML recarregado ao estado processado automaticamente.', type='info')
+            dialogo_recarregar.close()
+
+        # Só interrompe com uma confirmação se houver algo de fato a perder;
+        # se o texto já está igual ao original, recarrega direto sem incomodar.
+        if ed['texto_atual'] == ed['texto_original']:
+            ui.notify('Nada para recarregar — o editor já está no estado original.', type='info')
+            return
+
+        with ui.dialog() as dialogo_recarregar, ui.card():
+            ui.label('Descartar alterações?').classes('text-base font-bold')
+            ui.label('Isso vai descartar todas as edições feitas neste XML desde o processamento '
+                      'automático, voltando ao estado original. Essa ação não pode ser desfeita.') \
+                .classes('text-sm text-gray-600')
+            with ui.row().classes('w-full justify-end gap-2 mt-2'):
+                ui.button('Cancelar', on_click=dialogo_recarregar.close).props('flat')
+                ui.button('Descartar e recarregar', color='negative', on_click=confirmar_recarregar)
+        dialogo_recarregar.open()
     botao_recarregar.on('click', recarregar)
 
     def validar(_=None):
