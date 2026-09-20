@@ -7,9 +7,12 @@
 # interface foi refeita do zero em NiceGUI.
 #
 # Arquivos necessários na MESMA pasta deste script:
-#   - credentials.json  -> chave de Service Account do Google (leitura E
-#                           escrita — precisa de permissão de Editor na
-#                           planilha, não só Leitor)
+#   - credentials.json  -> chave de Service Account do Google (somente
+#                           LEITURA — a edição das regras foi retirada do
+#                           app de propósito; quem precisa alterar uma regra
+#                           faz isso direto na planilha, com acesso de
+#                           Editor nela. A credencial deste app só precisa
+#                           de permissão de Leitor na planilha.)
 #   - config.json        -> {"spreadsheet_url": "https://docs.google.com/spreadsheets/d/SEU_ID/edit"}
 #
 # Como rodar localmente:
@@ -91,7 +94,12 @@ def formatar_tabela_padrao(df):
 
 
 # ==========================================
-# ACESSO AO GOOGLE SHEETS (leitura E escrita, via Service Account)
+# ACESSO AO GOOGLE SHEETS (somente LEITURA, via Service Account)
+# A edição das regras de negócio foi retirada do app de propósito: como o
+# app é usado por várias pessoas, mas só algumas devem poder alterar as
+# regras, a edição fica restrita à própria planilha do Google Sheets
+# (acesso de Editor lá, gerenciado separadamente). Isto aqui só LÊ as
+# regras mais recentes a cada carregamento da página — nunca escreve nelas.
 # Substitui o st.connection("gsheets", ...) do Streamlit — aqui a app não
 # roda dentro do Streamlit, então falamos com a planilha diretamente via
 # gspread. Se as credenciais não estiverem configuradas, a aplicação
@@ -101,7 +109,10 @@ def formatar_tabela_padrao(df):
 PASTA_SCRIPT = os.path.dirname(os.path.abspath(__file__))
 CREDENCIAIS_PATH = os.path.join(PASTA_SCRIPT, "credentials.json")
 CONFIG_PATH = os.path.join(PASTA_SCRIPT, "config.json")
-_SCOPES_SHEETS = ["https://www.googleapis.com/auth/spreadsheets"]
+# Escopo só de leitura — a credencial deste app não consegue gravar na
+# planilha mesmo que algum código tente (não que exista mais código que
+# tente, mas é uma camada extra de segurança independente do código).
+_SCOPES_SHEETS = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 
 def _carregar_credenciais_service_account():
     """Procura a credencial do Google nesta ordem (cobre os 3 jeitos mais
@@ -186,21 +197,6 @@ def carregar_tabelas_do_sheets():
                 avisos.append(f"Aba '{aba}': {e}")
         dfs[aba] = df
     return dfs, avisos
-
-def salvar_tabela_no_sheets(aba, df):
-    """Grava o DataFrame inteiro na aba correspondente do Google Sheets
-    (substitui o conteúdo existente). Retorna (sucesso, mensagem_de_erro)."""
-    sh, erro_conexao = _conectar_planilha()
-    if sh is None:
-        return False, erro_conexao or "Conexão com o Google Sheets não configurada."
-    try:
-        ws = sh.worksheet(aba)
-        ws.clear()
-        valores = [df.columns.astype(str).tolist()] + df.astype(str).values.tolist()
-        ws.update(valores)
-        return True, None
-    except Exception as e:
-        return False, str(e)
 
 
 # ==========================================
@@ -821,25 +817,61 @@ TITULOS_AMIGAVEIS_AUDITORIA = {
 
 
 # ==========================================
-# TEMA VISUAL (mesmo espírito "desktop corporativo" da versão Streamlit)
+# TEMA VISUAL — identidade própria do Validador TISS: acentos em teal
+# (mais sóbrio que o azul padrão do Quasar, combina com o tom "saúde/
+# faturamento"), sombras suaves e cantos arredondados no lugar do visual
+# "flat" anterior, com transições sutis nos estados de hover.
 # ==========================================
 ui.add_head_html("""
 <style>
-    body { background-color: #f5f6f8 !important; }
+    :root {
+        --tiss-accent: #0f766e;
+        --tiss-accent-suave: #ccfbf1;
+        --tiss-borda: #e2e8f0;
+    }
+    body { background-color: #f4f7f6 !important; }
+
+    .q-card {
+        border-radius: 10px !important;
+    }
+
     .tiss-header, .tiss-toolbar, .tiss-statusbar, .tiss-panel {
         background-color: #ffffff;
-        border: 1px solid #d1d5db;
-        border-radius: 4px;
+        border: 1px solid var(--tiss-borda);
+        border-radius: 8px;
+        box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+        transition: box-shadow .15s ease;
     }
-    .tiss-header { padding: 8px 14px; }
+    .tiss-header {
+        padding: 8px 14px;
+        border-left: 4px solid var(--tiss-accent);
+    }
     .tiss-toolbar { padding: 4px 8px; }
+    .tiss-toolbar .q-btn {
+        border-radius: 6px;
+        transition: background-color .12s ease;
+    }
+    .tiss-toolbar .q-btn:hover {
+        background-color: var(--tiss-accent-suave);
+    }
     .tiss-statusbar { padding: 6px 14px; font-size: 12.5px; color: #374151; }
     .tiss-panel { padding: 10px; height: 74vh; overflow-y: auto; }
-    .tiss-app-name { font-weight: 700; color: #111827; font-size: 15px; }
-    .tiss-file-name { font-weight: 600; color: #374151; margin-left: 10px; }
+    .tiss-panel:hover { box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08); }
+
+    .tiss-app-name { font-weight: 700; color: var(--tiss-accent); font-size: 15px; }
+    .tiss-file-name { font-weight: 600; color: #374151; margin-left: 10px; transition: color .15s ease; }
     .tiss-file-name.modificado { color: #b45309; }
-    .diff-item { border-left: 3px solid #d97706; background-color: #fffbeb;
-                 padding: 6px 8px; margin-bottom: 6px; border-radius: 2px; font-size: 12.5px; }
+
+    .diff-item {
+        border-left: 3px solid #d97706;
+        background-color: #fffbeb;
+        padding: 7px 9px;
+        margin-bottom: 6px;
+        border-radius: 5px;
+        font-size: 12.5px;
+        transition: box-shadow .12s ease;
+    }
+    .diff-item:hover { box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08); }
     .diff-linha { color: #92400e; font-weight: 700; font-size: 11px; }
     .diff-campo { color: #1f2937; font-weight: 600; }
     .diff-valores { color: #4b5563; font-family: 'Consolas', monospace; font-size: 11.5px; }
@@ -864,11 +896,19 @@ ui.add_head_html("""
 
 @ui.page('/')
 def pagina_principal():
+    ui.colors(primary='#0f766e')  # identidade visual do app: teal em vez do azul padrão do Quasar
+
     # ======================================================================
     # ESTADO DESTA SESSÃO/ABA DO NAVEGADOR — cada usuário que abrir a
     # aplicação recebe seu próprio dicionário 'estado', isolado dos demais
     # (importante: os arquivos e edições de uma pessoa NUNCA aparecem para
     # outra, já que isso vai ser publicado para múltiplos usuários).
+    #
+    # As regras de negócio (médicos, procedimentos, itens etc.) são só LIDAS
+    # do Google Sheets aqui — a edição delas foi retirada do app de propósito:
+    # como o app é usado por várias pessoas, mas só algumas devem poder
+    # alterar as regras, a edição fica restrita a quem tem acesso direto à
+    # planilha, evitando que alguém sem contexto mude uma regra sem querer.
     # ======================================================================
     dfs_iniciais, avisos_sheets = carregar_tabelas_do_sheets()
     estado = {
@@ -880,20 +920,12 @@ def pagina_principal():
     }
     editores = {}  # chave: (lote_id, nome_arquivo) -> dict com o estado do editor daquele arquivo
 
-    with ui.tabs().classes('w-full') as abas_principais:
-        aba_processar = ui.tab('📜 Processar XMLs')
-        aba_regras = ui.tab('🛠️ Parametrização e Regras de Negócio')
-
-    with ui.tab_panels(abas_principais, value=aba_processar).classes('w-full'):
-        with ui.tab_panel(aba_processar):
-            if avisos_sheets:
-                with ui.expansion('⚠️ Avisos ao carregar as regras do Google Sheets', icon='warning').classes('w-full mb-2'):
-                    for a in avisos_sheets:
-                        ui.label(f"• {a}").classes('text-sm text-amber-700')
-            construir_aba_processamento(estado, editores)
-
-        with ui.tab_panel(aba_regras):
-            construir_aba_regras(estado)
+    with ui.column().classes('w-full max-w-none gap-2'):
+        if avisos_sheets:
+            with ui.expansion('⚠️ Avisos ao carregar as regras do Google Sheets', icon='warning').classes('w-full mb-2'):
+                for a in avisos_sheets:
+                    ui.label(f"• {a}").classes('text-sm text-amber-700')
+        construir_aba_processamento(estado, editores)
 
 
 # ==========================================================================
@@ -1341,90 +1373,6 @@ def construir_editor_xml(estado, editores, resultado):
     botao_sub_todos.on('click', substituir_todos)
 
     atualizar_interface()
-
-
-# ==========================================================================
-# ABA "PARAMETRIZAÇÃO E REGRAS DE NEGÓCIO"
-# ==========================================================================
-_ROTULOS_ABAS_REGRAS = {
-    'medicos': '👨‍⚕️ Médicos',
-    'procedimentos': '⚙️ Procedimentos',
-    'troca_equipe_sadt': '🔀 Troca de Equipe SADT',
-    'conveniados': '🤝 Conveniados',
-    'blindagem': '🛡️ Blindagem',
-    'itens': '📦 Itens',
-    'unidades': '📏 Unidades de Medida',
-    'anvisa': '🩺 ANVISA',
-}
-
-def construir_aba_regras(estado):
-    with ui.row().classes('w-full justify-end'):
-        def recarregar_tudo():
-            estado['dfs'], avisos = carregar_tabelas_do_sheets()
-            if avisos:
-                ui.notify('Recarregado com avisos — veja o console/expander no topo.', type='warning')
-            else:
-                ui.notify('Regras recarregadas do Google Sheets.', type='positive')
-            abas_regras.refresh()
-        ui.button('🔄 Recarregar do Google Sheets', on_click=recarregar_tudo).props('flat')
-
-    abas_regras(estado)
-
-
-@ui.refreshable
-def abas_regras(estado):
-    with ui.tabs().classes('w-full') as sub_abas:
-        objetos_aba = {aba: ui.tab(_ROTULOS_ABAS_REGRAS.get(aba, aba)) for aba in tabelas_padrao.keys()}
-
-    with ui.tab_panels(sub_abas, value=objetos_aba['medicos']).classes('w-full'):
-        for aba, tab_obj in objetos_aba.items():
-            with ui.tab_panel(tab_obj):
-                construir_tabela_regra(estado, aba)
-
-
-def construir_tabela_regra(estado, aba):
-    df = estado['dfs'].get(aba, tabelas_padrao[aba]).copy()
-    if df.empty:
-        df = pd.DataFrame(columns=tabelas_padrao[aba].columns)
-        df.loc[0] = [''] * len(df.columns)
-
-    colunas = [{'headerName': c, 'field': c, 'editable': True, 'flex': 1} for c in df.columns]
-    grid = ui.aggrid({
-        'columnDefs': colunas,
-        'rowData': df.to_dict('records'),
-        'rowSelection': 'multiple',
-        'stopEditingWhenCellsLoseFocus': True,
-    }).classes('w-full h-96')
-
-    def adicionar_linha():
-        nova = {c: '' for c in df.columns}
-        grid.options['rowData'].append(nova)
-        grid.update()
-
-    async def remover_selecionadas():
-        selecionadas = await grid.get_selected_rows()
-        if not selecionadas:
-            ui.notify('Selecione ao menos uma linha (clique na linha, não só na célula).', type='warning')
-            return
-        grid.options['rowData'] = [r for r in grid.options['rowData'] if r not in selecionadas]
-        grid.update()
-
-    async def salvar_na_nuvem():
-        dados_atuais = await grid.get_client_data()
-        novo_df = pd.DataFrame(dados_atuais)
-        # remove linhas totalmente vazias antes de gravar
-        novo_df = novo_df[~(novo_df.astype(str).apply(lambda col: col.str.strip()).eq('').all(axis=1))]
-        sucesso, erro = salvar_tabela_no_sheets(aba, novo_df)
-        if sucesso:
-            estado['dfs'][aba] = formatar_tabela_padrao(novo_df.copy())
-            ui.notify(f"✅ Regras de '{_ROTULOS_ABAS_REGRAS.get(aba, aba)}' gravadas na nuvem.", type='positive')
-        else:
-            ui.notify(f"❌ Falha ao gravar: {erro}", type='negative', multi_line=True, close_button=True)
-
-    with ui.row().classes('w-full gap-2 mt-2'):
-        ui.button('➕ Adicionar Linha', on_click=adicionar_linha).props('flat')
-        ui.button('🗑️ Remover Selecionadas', on_click=remover_selecionadas).props('flat')
-        ui.button('💾 Gravar Alterações na Nuvem', on_click=salvar_na_nuvem, color='primary')
 
 
 ui.run(
