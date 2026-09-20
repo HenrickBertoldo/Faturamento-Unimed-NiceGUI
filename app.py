@@ -913,14 +913,30 @@ def construir_aba_processamento(estado, editores):
                     resultado['falha_total'] = str(e)
                 resultados.append(resultado)
                 barra.set_value((i + 1) / len(pendentes))
-            estado['resultados_lote'] = resultados
+            # Junta os arquivos deste lote aos que já estavam na lista, em vez
+            # de substituir tudo. Se um arquivo com o mesmo nome já tiver sido
+            # processado antes, a versão mais nova (deste clique) substitui a
+            # antiga; arquivos com nomes diferentes de lotes anteriores
+            # continuam disponíveis para seleção.
+            existentes_por_nome = {r['nome']: r for r in estado['resultados_lote']}
+            for r in resultados:
+                existentes_por_nome[r['nome']] = r
+            estado['resultados_lote'] = list(existentes_por_nome.values())
             estado['lote_id'] += 1
             estado['arquivos_pendentes'] = []
             label_pendentes.text = 'Nenhum arquivo selecionado ainda.'
             barra.visible = False
             painel_resultados.refresh()
 
-        ui.button('🚀 Iniciar Correção Automática', on_click=iniciar_correcao, color='primary').classes('w-full mt-2')
+        async def limpar_lista_processados():
+            estado['resultados_lote'] = []
+            estado['lote_id'] += 1
+            painel_resultados.refresh()
+            ui.notify('Lista de arquivos processados limpa.', type='info')
+
+        with ui.row().classes('w-full mt-2 gap-2 no-wrap'):
+            ui.button('🚀 Iniciar Correção Automática', on_click=iniciar_correcao, color='primary').classes('flex-grow')
+            ui.button('🧹 Limpar Lista', on_click=limpar_lista_processados).props('flat')
         barra = ui.linear_progress(value=0).classes('w-full mt-1')
         barra.visible = False
 
