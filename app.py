@@ -861,6 +861,7 @@ def pagina_principal():
         'arquivos_pendentes': [],   # [(nome, bytes), ...] aguardando processamento
         'resultados_lote': [],
         'lote_id': 0,
+        'arquivo_selecionado': None,  # nome do arquivo escolhido no seletor, para sobreviver a um refresh do painel
     }
     editores = {}  # chave: (lote_id, nome_arquivo) -> dict com o estado do editor daquele arquivo
 
@@ -930,6 +931,7 @@ def construir_aba_processamento(estado, editores):
 
         async def limpar_lista_processados():
             estado['resultados_lote'] = []
+            estado['arquivo_selecionado'] = None
             estado['lote_id'] += 1
             painel_resultados.refresh()
             ui.notify('Lista de arquivos processados limpa.', type='info')
@@ -964,6 +966,7 @@ def painel_resultados(estado, editores):
             return
 
         nomes = [r['nome'] for r in sucesso]
+        valor_inicial = estado['arquivo_selecionado'] if estado['arquivo_selecionado'] in nomes else nomes[0]
         if len(sucesso) > 1:
             def baixar_zip():
                 buffer = io.BytesIO()
@@ -972,11 +975,12 @@ def painel_resultados(estado, editores):
                         zf.writestr(f"PRONTO_{r['nome']}", r['xml_bytes'])
                 ui.download.content(buffer.getvalue(), 'XMLS_CORRIGIDOS.zip', media_type='application/zip')
             ui.button('📦 Baixar Todos os XMLs Corrigidos (.ZIP)', on_click=baixar_zip, color='primary').classes('w-full')
-            seletor_arquivo = ui.select(nomes, value=nomes[0], label='Arquivo selecionado').classes('w-full mt-2')
+            seletor_arquivo = ui.select(nomes, value=valor_inicial, label='Arquivo selecionado').classes('w-full mt-2')
         else:
             seletor_arquivo = None
 
         nome_escolhido = seletor_arquivo.value if seletor_arquivo else nomes[0]
+        estado['arquivo_selecionado'] = nome_escolhido
         resultado = next(r for r in sucesso if r['nome'] == nome_escolhido)
 
         aud = resultado.get('auditoria') or {}
@@ -990,8 +994,12 @@ def painel_resultados(estado, editores):
         if aud.get('erros'):
             ui.label(f"⚠️ {len(aud['erros'])} aviso(s)/erro(s) pontual(is) durante o processamento.").classes('text-sm text-amber-700 mt-1')
 
+        def ao_trocar_arquivo(e):
+            estado['arquivo_selecionado'] = e.value
+            painel_resultados.refresh()
+
         if seletor_arquivo:
-            seletor_arquivo.on_value_change(lambda: painel_resultados.refresh())
+            seletor_arquivo.on_value_change(ao_trocar_arquivo)
 
     construir_editor_xml(estado, editores, resultado)
 
