@@ -1142,7 +1142,14 @@ def construir_editor_xml(estado, editores, resultado):
         ed['hash_atual'] = _extrair_hash_do_texto(novo_texto_final)
         ed['salvo_alguma_vez'] = True
         resultado['xml_bytes'] = novos_bytes
-        ui.notify('✅ Alterações salvas e hash recalculado.', type='positive')
+        # Além de validar e recalcular o hash, já dispara o download do
+        # arquivo final automaticamente. O "Salvar" nunca escreve nada no
+        # disco por conta própria (o Python roda no servidor, não na máquina
+        # de quem está usando o app) — quem efetivamente coloca o arquivo no
+        # computador é sempre o download do navegador. Antes, isso exigia
+        # dois cliques (Salvar, depois Baixar); agora sai em um só.
+        ui.download.content(novos_bytes, f"PRONTO_{nome_arquivo}", media_type='application/xml')
+        ui.notify('✅ Alterações salvas, hash recalculado e download iniciado.', type='positive')
     botao_salvar_header.on('click', salvar)
 
     def desfazer(_=None):
