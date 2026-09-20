@@ -64,6 +64,15 @@ def limpar_numero(valor):
     elif v.endswith('.0'): v = v[:-2]
     return v
 
+def identificar_plano_pela_carteira(numero_carteira):
+    """Identifica o plano do beneficiário a partir do início/prefixo da
+    carteirinha. Reaproveita o MESMO tamanho de prefixo (4 dígitos) que a
+    aplicação já usa para reconhecer a Unimed 0014 (ver 'eh_unimed_0014' em
+    processar_xml_tiss) — não inventa um novo tamanho de prefixo nem uma
+    nova regra de identificação, apenas generaliza a lógica existente para
+    também poder ser comparada com uma lista de planos contratados."""
+    return (numero_carteira or '')[:4]
+
 def padronizar_codigo_8_digitos(cod):
     """Garante 8 dígitos num código totalmente numérico, repondo à esquerda
     quantos zeros forem necessários. Isso importa porque, quando uma célula
@@ -87,7 +96,7 @@ tabelas_padrao = {
     'medicos': pd.DataFrame(columns=['Nome do Médico', 'CBO Correto', 'Substituir por Cód. Operadora', 'Código na Operadora']),
     'procedimentos': pd.DataFrame(columns=['Código do Procedimento', 'Grau Part Obrigatório', 'Via de Acesso (1, 2 ou EXCLUIR)', 'Técnica (1, 2 ou EXCLUIR)']),
     'conveniados': pd.DataFrame(columns=['Nome do Médico Conveniado']),
-    'blindagem': pd.DataFrame(columns=['Código Prestador Protegido']),
+    'blindagem': pd.DataFrame(columns=['Código Prestador Protegido', 'Tipo', 'Código']),
     'itens': pd.DataFrame(columns=['Código Incorreto', 'Código Correto']),
     'unidades': pd.DataFrame(columns=['Código do Item', 'Unidade de Medida Correta']),
     'anvisa': pd.DataFrame(columns=['Código do Item', 'Registro ANVISA', 'Ref. Fabricante'])
@@ -388,11 +397,197 @@ def validar_e_recalcular_xml_editado(texto_editado):
         return None, f"Falha ao recalcular o hash/serializar o XML: {e}"
     return xml_bytes, None
 
+# ==========================================================================
+# 🆕 FRAGMENTAÇÃO DE PROCEDIMENTOS PARA OUTRO PRESTADOR (ex.: 220163)
+# ==========================================================================
+# Constantes fixas do hospital/UMC contratante (código 110591) usadas quando
+# o valor não está disponível na própria guia de origem. Este aplicativo já
+# atende especificamente a este hospital em outras regras (ex.: prefixo de
+# carteirinha '0014' da Unimed), então fixar esses dois valores aqui segue a
+# mesma convenção — ajuste-os se o nome/registro oficial mudar.
+_CODIGO_HOSPITAL_UMC = '110591'
+_NOME_HOSPITAL_UMC = 'COMPLEXO HOSPITALAR UBERLANDIA SA - UMC'
+
+def _texto_de(pai, caminho):
+    """Busca um elemento pelo caminho XPath (namespace 'ans') e devolve seu
+    texto, ou None se o elemento não existir ou estiver vazio."""
+    if pai is None:
+        return None
+    elem = pai.find(caminho, NS)
+    return elem.text if elem is not None and elem.text else None
+
+def _adicionar_procedimento_realizado(procs_realizados_pai, proc_exec_origem, prestador_frag, sequencial):
+    """Copia um procedimentoExecutado (modelo de guiaResumoInternacao) para
+    um procedimentoRealizado (modelo de guiaHonorarios), remapeando os nomes
+    de campo conforme o XML de referência do fragmento 220163. Devolve o
+    valorTotal do item, para acumular o total de honorários da guia."""
+    pr = ET.SubElement(procs_realizados_pai, ans_tag('procedimentoRealizado'))
+
+    ET.SubElement(pr, ans_tag('sequencialItem')).text = _texto_de(proc_exec_origem, 'ans:sequencialItem') or str(sequencial)
+    for campo in ('dataExecucao', 'horaInicial', 'horaFinal'):
+        valor = _texto_de(proc_exec_origem, f'ans:{campo}')
+        if valor: ET.SubElement(pr, ans_tag(campo)).text = valor
+
+    proc_origem = proc_exec_origem.find('ans:procedimento', NS)
+    procedimento = ET.SubElement(pr, ans_tag('procedimento'))
+    for campo in ('codigoTabela', 'codigoProcedimento', 'descricaoProcedimento'):
+        valor = _texto_de(proc_origem, f'ans:{campo}')
+        if valor: ET.SubElement(procedimento, ans_tag(campo)).text = valor
+
+    for campo in ('quantidadeExecutada', 'viaAcesso', 'tecnicaUtilizada', 'reducaoAcrescimo', 'valorUnitario', 'valorTotal'):
+        valor = _texto_de(proc_exec_origem, f'ans:{campo}')
+        if valor: ET.SubElement(pr, ans_tag(campo)).text = valor
+
+    # Profissionais do prestador fragmentado (identEquipe/identificacaoEquipe
+    # ou equipeSadt na guia original ➔ profissionais no modelo de honorários).
+    equipes = proc_exec_origem.findall('ans:identEquipe', NS) + proc_exec_origem.findall('ans:equipeSadt', NS)
+    for eq in equipes:
+        cod_prestador_eq = _texto_de(eq, './/ans:codProfissional/ans:codigoPrestadorNaOperadora')
+        if cod_prestador_eq is None or limpar_numero(cod_prestador_eq) != prestador_frag:
+            continue
+        origem_eq = eq.find('ans:identificacaoEquipe', NS) if tag_limpa(eq) == 'identEquipe' else eq
+        profissionais = ET.SubElement(pr, ans_tag('profissionais'))
+        mapa_campos = [
+            ('grauPart', 'grauParticipacao'), ('grauParticipacao', 'grauParticipacao'),
+        ]
+        grau = _texto_de(origem_eq, 'ans:grauPart') or _texto_de(origem_eq, 'ans:grauParticipacao')
+        if grau: ET.SubElement(profissionais, ans_tag('grauParticipacao')).text = grau
+        cod_prof = ET.SubElement(profissionais, ans_tag('codProfissional'))
+        ET.SubElement(cod_prof, ans_tag('codigoPrestadorNaOperadora')).text = limpar_numero(cod_prestador_eq)
+        nome_prof = _texto_de(origem_eq, 'ans:nomeProf') or _texto_de(origem_eq, 'ans:nomeProfissional')
+        if nome_prof: ET.SubElement(profissionais, ans_tag('nomeProfissional')).text = nome_prof
+        conselho = _texto_de(origem_eq, 'ans:conselho') or _texto_de(origem_eq, 'ans:conselhoProfissional')
+        if conselho: ET.SubElement(profissionais, ans_tag('conselhoProfissional')).text = conselho
+        num_conselho = _texto_de(origem_eq, 'ans:numeroConselhoProfissional')
+        if num_conselho: ET.SubElement(profissionais, ans_tag('numeroConselhoProfissional')).text = num_conselho
+        uf = _texto_de(origem_eq, 'ans:UF')
+        if uf: ET.SubElement(profissionais, ans_tag('UF')).text = uf
+        cbo = _texto_de(origem_eq, 'ans:CBOS') or _texto_de(origem_eq, 'ans:CBO') or _texto_de(origem_eq, 'ans:codigoCBOS') or _texto_de(origem_eq, 'ans:codigoCBO')
+        if cbo: ET.SubElement(profissionais, ans_tag('CBO')).text = cbo
+
+    try:
+        return float(_texto_de(proc_exec_origem, 'ans:valorTotal') or 0)
+    except ValueError:
+        return 0.0
+
+def _construir_guia_honorarios(guias_tiss_pai, guia_origem, prestador_frag, itens_guia, data_emissao):
+    """Monta uma guiaHonorarios (modelo do XML de referência do fragmento
+    220163) a partir de uma guiaResumoInternacao de origem e da lista de
+    procedimentos que a regra de fragmentação decidiu mover para ela."""
+    guia_hon = ET.SubElement(guias_tiss_pai, ans_tag('guiaHonorarios'))
+
+    cab_guia = ET.SubElement(guia_hon, ans_tag('cabecalhoGuia'))
+    registro_ans = _texto_de(guia_origem, './/ans:cabecalhoGuia/ans:registroANS')
+    if registro_ans: ET.SubElement(cab_guia, ans_tag('registroANS')).text = registro_ans
+    # Não há, na guia original, um "número de guia do prestador" próprio do
+    # 220163 (essa numeração pertence ao sistema de faturamento dele, ao qual
+    # esta aplicação não tem acesso). Reaproveitamos o número da guia
+    # original em vez de inventar uma sequência nova — ajuste manualmente se
+    # o prestador exigir sua própria numeração antes do envio.
+    numero_guia_prestador = _texto_de(guia_origem, './/ans:cabecalhoGuia/ans:numeroGuiaPrestador')
+    if numero_guia_prestador: ET.SubElement(cab_guia, ans_tag('numeroGuiaPrestador')).text = numero_guia_prestador
+
+    numero_solicitacao = _texto_de(guia_origem, './/ans:numeroGuiaSolicitacaoInternacao')
+    if numero_solicitacao: ET.SubElement(guia_hon, ans_tag('guiaSolicInternacao')).text = numero_solicitacao
+
+    senha = _texto_de(guia_origem, './/ans:dadosAutorizacao/ans:senha')
+    if senha: ET.SubElement(guia_hon, ans_tag('senha')).text = senha
+
+    numero_guia_operadora = _texto_de(guia_origem, './/ans:dadosAutorizacao/ans:numeroGuiaOperadora')
+    if numero_guia_operadora: ET.SubElement(guia_hon, ans_tag('numeroGuiaOperadora')).text = numero_guia_operadora
+
+    beneficiario = ET.SubElement(guia_hon, ans_tag('beneficiario'))
+    numero_carteira = _texto_de(guia_origem, './/ans:dadosBeneficiario/ans:numeroCarteira')
+    if numero_carteira: ET.SubElement(beneficiario, ans_tag('numeroCarteira')).text = numero_carteira
+    ET.SubElement(beneficiario, ans_tag('atendimentoRN')).text = _texto_de(guia_origem, './/ans:dadosBeneficiario/ans:atendimentoRN') or 'N'
+
+    cnes_original = _texto_de(guia_origem, './/ans:dadosExecutante/ans:CNES')
+    prestador_hospital = _texto_de(guia_origem, './/ans:dadosExecutante/ans:contratadoExecutante/ans:codigoPrestadorNaOperadora') or _CODIGO_HOSPITAL_UMC
+
+    local_contratado = ET.SubElement(guia_hon, ans_tag('localContratado'))
+    cod_contratado = ET.SubElement(local_contratado, ans_tag('codigoContratado'))
+    ET.SubElement(cod_contratado, ans_tag('codigoNaOperadora')).text = prestador_hospital
+    ET.SubElement(local_contratado, ans_tag('nomeContratado')).text = _NOME_HOSPITAL_UMC
+    if cnes_original: ET.SubElement(local_contratado, ans_tag('cnes')).text = cnes_original
+
+    contratado_exec = ET.SubElement(guia_hon, ans_tag('dadosContratadoExecutante'))
+    ET.SubElement(contratado_exec, ans_tag('codigonaOperadora')).text = prestador_frag
+    if cnes_original: ET.SubElement(contratado_exec, ans_tag('cnesContratadoExecutante')).text = cnes_original
+
+    dados_internacao = ET.SubElement(guia_hon, ans_tag('dadosInternacao'))
+    data_inicio = _texto_de(guia_origem, './/ans:dadosInternacao/ans:dataInicioFaturamento')
+    if data_inicio: ET.SubElement(dados_internacao, ans_tag('dataInicioFaturamento')).text = data_inicio
+    data_fim = _texto_de(guia_origem, './/ans:dadosInternacao/ans:dataFinalFaturamento')
+    if data_fim: ET.SubElement(dados_internacao, ans_tag('dataFimFaturamento')).text = data_fim
+
+    procs_realizados = ET.SubElement(guia_hon, ans_tag('procedimentosRealizados'))
+    valor_total_honorarios = sum(
+        _adicionar_procedimento_realizado(procs_realizados, item['proc_exec'], prestador_frag, i)
+        for i, item in enumerate(itens_guia, start=1)
+    )
+    ET.SubElement(guia_hon, ans_tag('valorTotalHonorarios')).text = f"{valor_total_honorarios:.2f}"
+
+    if data_emissao: ET.SubElement(guia_hon, ans_tag('dataEmissaoGuia')).text = data_emissao
+
+def construir_fragmento_honorarios(root_original, prestador_frag, itens):
+    """Monta um novo documento mensagemTISS (modelo de guiaHonorarios, igual
+    ao XML de referência do fragmento 220163) contendo uma guiaHonorarios
+    para cada guia de internação de origem que teve procedimento(s) movidos
+    para este prestador. Reaproveita os identificadores já existentes na
+    guia original (número de solicitação, senha, número da guia, CNES, lote
+    e cabeçalho da transação) em vez de inventar uma numeração própria.
+    Devolve (tree, root) prontos para passar por recalcular_hash_e_serializar
+    — a mesma função usada pelo restante da aplicação."""
+    cabecalho_original = root_original.find('.//ans:cabecalho', NS)
+    lote_original = root_original.find('.//ans:loteGuias/ans:numeroLote', NS)
+    data_emissao = _texto_de(cabecalho_original, './/ans:dataRegistroTransacao')
+
+    root_frag = ET.Element(ans_tag('mensagemTISS'), dict(root_original.attrib))
+    tree_frag = ET.ElementTree(root_frag)
+
+    cabecalho = ET.SubElement(root_frag, ans_tag('cabecalho'))
+    ident_transacao = ET.SubElement(cabecalho, ans_tag('identificacaoTransacao'))
+    for campo in ('tipoTransacao', 'sequencialTransacao', 'dataRegistroTransacao', 'horaRegistroTransacao'):
+        valor = _texto_de(cabecalho_original, f'.//ans:{campo}')
+        if valor: ET.SubElement(ident_transacao, ans_tag(campo)).text = valor
+
+    origem = ET.SubElement(cabecalho, ans_tag('origem'))
+    ident_prestador = ET.SubElement(origem, ans_tag('identificacaoPrestador'))
+    ET.SubElement(ident_prestador, ans_tag('codigoPrestadorNaOperadora')).text = prestador_frag
+
+    destino = ET.SubElement(cabecalho, ans_tag('destino'))
+    registro_ans_destino = _texto_de(cabecalho_original, './/ans:destino/ans:registroANS')
+    if registro_ans_destino: ET.SubElement(destino, ans_tag('registroANS')).text = registro_ans_destino
+
+    padrao = _texto_de(cabecalho_original, './/ans:Padrao')
+    if padrao: ET.SubElement(cabecalho, ans_tag('Padrao')).text = padrao
+
+    prestador_para_operadora = ET.SubElement(root_frag, ans_tag('prestadorParaOperadora'))
+    lote_guias = ET.SubElement(prestador_para_operadora, ans_tag('loteGuias'))
+    ET.SubElement(lote_guias, ans_tag('numeroLote')).text = (lote_original.text if lote_original is not None and lote_original.text else '')
+    guias_tiss = ET.SubElement(lote_guias, ans_tag('guiasTISS'))
+
+    # Agrupa por guia de origem: uma guiaHonorarios por internação de origem,
+    # preservando o vínculo 1:1 mesmo que várias guias do mesmo arquivo
+    # tenham itens elegíveis para este prestador.
+    por_guia = {}
+    for item in itens:
+        grupo = por_guia.setdefault(id(item['guia']), {'guia': item['guia'], 'itens': []})
+        grupo['itens'].append(item)
+
+    for grupo in por_guia.values():
+        _construir_guia_honorarios(guias_tiss, grupo['guia'], prestador_frag, grupo['itens'], data_emissao)
+
+    epilogo = ET.SubElement(root_frag, ans_tag('epilogo'))
+    ET.SubElement(epilogo, ans_tag('hash'))
+
+    return tree_frag, root_frag
+
 def processar_xml_tiss(arquivo_xml, dfs):
     auditoria = {
         'cbos': [], 'medicos_trocados': [], 'itens': [], 'anvisa': [], 'unidades': [], 'oxigenio': [],
         'conveniados_excluidos': [], 'procedimentos_ajustados': [], 'guias_blindadas': [], 'erros': [],
-        'valores_negativos': [], 'motivo_encerramento': [], 'horarios_duplicados': []
+        'valores_negativos': [], 'motivo_encerramento': [], 'horarios_duplicados': [], 'fragmentados': []
     }
     
     arquivo_xml.seek(0)
@@ -434,7 +629,43 @@ def processar_xml_tiss(arquivo_xml, dfs):
     set_conveniados = set(df_conveniados['Nome do Médico Conveniado'].dropna().astype(str).str.strip().str.upper()) if not df_conveniados.empty and 'Nome do Médico Conveniado' in df_conveniados.columns else set()
 
     df_blindagem = dfs.get('blindagem', pd.DataFrame()) if isinstance(dfs, dict) else pd.DataFrame()
-    set_blindagem = set(df_blindagem['Código Prestador Protegido'].apply(limpar_numero).dropna()) if not df_blindagem.empty and 'Código Prestador Protegido' in df_blindagem.columns else set()
+    tem_colunas_fragmentacao = not df_blindagem.empty and 'Tipo' in df_blindagem.columns and 'Código' in df_blindagem.columns
+
+    # Linhas de "proteção total" (comportamento já existente): guia inteira é
+    # ignorada quando o prestador aparece nela. São as linhas em que Tipo/
+    # Código estão vazios — inclusive linhas de planilhas antigas, que nunca
+    # tiveram essas duas colunas.
+    def _e_linha_de_protecao_total(linha):
+        if not tem_colunas_fragmentacao:
+            return True
+        tipo = str(linha.get('Tipo', '')).strip().upper()
+        return tipo not in ('PLANO', 'PROCEDIMENTO')
+
+    set_blindagem = set(
+        limpar_numero(r['Código Prestador Protegido'])
+        for _, r in df_blindagem.iterrows()
+        if pd.notna(r.get('Código Prestador Protegido')) and _e_linha_de_protecao_total(r)
+    ) if not df_blindagem.empty and 'Código Prestador Protegido' in df_blindagem.columns else set()
+
+    # 🆕 NOVA REGRA: contratos de fragmentação por prestador — linhas em que
+    # Tipo = PLANO ou PROCEDIMENTO, indicando planos/procedimentos contratados
+    # para aquele prestador (usado para decidir o que sai do arquivo principal
+    # e vai para um fragmento de honorários daquele prestador). Guardado como
+    # {codigo_prestador: {'planos': {...}, 'procedimentos': {...}}}.
+    dict_fragmentacao = {}
+    if tem_colunas_fragmentacao:
+        for _, r in df_blindagem.iterrows():
+            prestador_frag = limpar_numero(r.get('Código Prestador Protegido', ''))
+            tipo = str(r.get('Tipo', '')).strip().upper()
+            codigo_bruto = r.get('Código', '')
+            if not prestador_frag or tipo not in ('PLANO', 'PROCEDIMENTO') or pd.isna(codigo_bruto) or limpar_numero(codigo_bruto) == '':
+                continue
+            cfg = dict_fragmentacao.setdefault(prestador_frag, {'planos': set(), 'procedimentos': set()})
+            if tipo == 'PLANO':
+                cfg['planos'].add(limpar_numero(codigo_bruto))
+            else:
+                cfg['procedimentos'].add(padronizar_codigo_8_digitos(codigo_bruto))
+    fragmentos_coletados = {}  # {codigo_prestador: [itens fragmentados desta execução]}
 
     df_itens = dfs.get('itens', pd.DataFrame()) if isinstance(dfs, dict) else pd.DataFrame()
     dict_itens = {padronizar_codigo_8_digitos(k): padronizar_codigo_8_digitos(v) for k, v in zip(df_itens['Código Incorreto'], df_itens['Código Correto']) if pd.notna(k)} if not df_itens.empty and 'Código Incorreto' in df_itens.columns else {}
@@ -465,7 +696,7 @@ def processar_xml_tiss(arquivo_xml, dfs):
             if tipo_guia == 'internacao':
                 carteira_elem = guia.find('.//ans:dadosBeneficiario/ans:numeroCarteira', NS)
                 numero_carteira = limpar_numero(carteira_elem.text) if carteira_elem is not None and carteira_elem.text else ""
-                eh_unimed_0014 = numero_carteira.startswith('0014')
+                eh_unimed_0014 = identificar_plano_pela_carteira(numero_carteira) == '0014'
 
             # --- SUBSTITUIÇÃO DE EQUIPE EM GUIAS SADT ---
             if tipo_guia == 'sadt':
@@ -694,7 +925,63 @@ def processar_xml_tiss(arquivo_xml, dfs):
                 # código + data + horário) para evitar a crítica "Serviço duplicado".
                 ajustar_horarios_duplicados(procs_container, auditoria)
 
-            # --- OUTRAS DESPESAS ---
+                # 🆕 NOVA REGRA: fragmentação de procedimentos por prestador.
+                # Regra lógica: fragmentar = prestador contratado (ex.: 220163)
+                # AND plano do beneficiário contratado para esse prestador AND
+                # procedimento contratado para esse prestador. Avaliada por
+                # procedimento — nunca fragmenta a guia inteira por causa de
+                # um único item elegível (ver PDF "regra_fragmentacao_prestador
+                # _220163", seção 6 e casos 1 a 5).
+                if tipo_guia == 'internacao' and dict_fragmentacao:
+                    plano_beneficiario = identificar_plano_pela_carteira(numero_carteira)
+                    for proc_exec in list(procs_container.findall('ans:procedimentoExecutado', NS)):
+                        equipes_proc = proc_exec.findall('ans:identEquipe', NS) + proc_exec.findall('ans:equipeSadt', NS)
+                        prestadores_do_proc = set()
+                        for eq in equipes_proc:
+                            cod_eq = eq.find('.//ans:codProfissional/ans:codigoPrestadorNaOperadora', NS)
+                            if cod_eq is not None and cod_eq.text:
+                                prestadores_do_proc.add(limpar_numero(cod_eq.text))
+
+                        for prestador_frag, cfg_frag in dict_fragmentacao.items():
+                            if prestador_frag not in prestadores_do_proc:
+                                continue  # Condição 1 (prestador): não é deste prestador
+                            if plano_beneficiario not in cfg_frag['planos']:
+                                continue  # Condição 2 (plano): plano não contratado para este prestador
+                            cod_proc_elem = proc_exec.find('.//ans:codigoProcedimento', NS)
+                            cod_proc_frag = padronizar_codigo_8_digitos(cod_proc_elem.text) if cod_proc_elem is not None and cod_proc_elem.text else ""
+                            if cod_proc_frag not in cfg_frag['procedimentos']:
+                                continue  # Condição 3 (procedimento): procedimento não contratado para este prestador
+
+                            # As 3 condições bateram simultaneamente: retira do
+                            # arquivo principal e leva para o fragmento deste
+                            # prestador (agrupado por guia de origem).
+                            fragmentos_coletados.setdefault(prestador_frag, []).append({
+                                'guia': guia, 'proc_exec': proc_exec, 'plano': plano_beneficiario, 'cod_proc': cod_proc_frag,
+                            })
+                            procs_container.remove(proc_exec)
+
+                            valor_elem_frag = proc_exec.find('ans:valorTotal', NS)
+                            try:
+                                valor_removido = float(valor_elem_frag.text) if valor_elem_frag is not None and valor_elem_frag.text else 0.0
+                            except ValueError:
+                                valor_removido = 0.0
+                            valor_total_guia = guia.find('.//ans:valorTotal', NS)
+                            if valor_total_guia is not None and valor_removido:
+                                for campo_valor in ('valorProcedimentos', 'valorTotalGeral'):
+                                    campo_elem = valor_total_guia.find(f'ans:{campo_valor}', NS)
+                                    if campo_elem is not None and campo_elem.text:
+                                        try:
+                                            campo_elem.text = f"{float(campo_elem.text) - valor_removido:.2f}"
+                                        except ValueError:
+                                            pass
+
+                            auditoria['fragmentados'].append(
+                                f"Procedimento {cod_proc_frag} (Plano {plano_beneficiario}) retirado do arquivo "
+                                f"principal e movido para o fragmento de honorários do prestador {prestador_frag}."
+                            )
+                            break  # um procedimento só pode ir para o fragmento de um único prestador
+
+
             despesas_container = guia.find('.//ans:outrasDespesas', NS)
             if despesas_container is not None:
                 for despesa in despesas_container.findall('ans:despesa', NS):
@@ -753,7 +1040,17 @@ def processar_xml_tiss(arquivo_xml, dfs):
     # nenhum detalhe de formatação/serialização do XML) ---
     xml_bytes = recalcular_hash_e_serializar(tree, root)
 
-    return xml_bytes, auditoria
+    # 🆕 NOVA REGRA: gera um XML de honorários por prestador que recebeu ao
+    # menos um procedimento fragmentado (nunca gera fragmento vazio).
+    fragmentos = []
+    for prestador_frag, itens_frag in fragmentos_coletados.items():
+        if not itens_frag:
+            continue
+        tree_frag, root_frag = construir_fragmento_honorarios(root, prestador_frag, itens_frag)
+        xml_frag_bytes = recalcular_hash_e_serializar(tree_frag, root_frag)
+        fragmentos.append({'prestador': prestador_frag, 'xml_bytes': xml_frag_bytes, 'itens': itens_frag})
+
+    return xml_bytes, auditoria, fragmentos
 
 _PADRAO_TAG_LINHA = re.compile(r'<([\w:.-]+)>([^<]*)</\1>')
 
@@ -822,7 +1119,8 @@ TITULOS_AMIGAVEIS_AUDITORIA = {
     'erros': '⚠️ Avisos e Erros Durante o Processamento',
     'valores_negativos': '➖ Valores Negativos Corrigidos',
     'motivo_encerramento': '🚪 Motivo de Encerramento (11 ➔ 12)',
-    'horarios_duplicados': '⏰ Horários Escalonados (Anti-Duplicidade)'
+    'horarios_duplicados': '⏰ Horários Escalonados (Anti-Duplicidade)',
+    'fragmentados': '📦 Procedimentos Fragmentados para Outro Prestador'
 }
 
 
@@ -1026,12 +1324,30 @@ def construir_aba_processamento(estado, editores):
             for i, (nome, conteudo) in enumerate(pendentes):
                 resultado = {'nome': nome, 'xml_bytes': None, 'auditoria': None, 'falha_total': None}
                 try:
-                    xml_resultado, auditoria = processar_xml_tiss(io.BytesIO(conteudo), estado['dfs'])
+                    xml_resultado, auditoria, fragmentos = processar_xml_tiss(io.BytesIO(conteudo), estado['dfs'])
                     resultado['xml_bytes'] = xml_resultado
                     resultado['auditoria'] = auditoria
+                    resultados.append(resultado)
+                    # 🆕 Cada fragmento de honorários gerado (ex.: prestador
+                    # 220163) vira um resultado independente, com nome próprio
+                    # — assim ele aparece no seletor de arquivos, pode ser
+                    # editado/validado como qualquer outro, e entra junto no
+                    # ZIP de "Baixar Todos", reaproveitando toda a infra já
+                    # existente em vez de criar um caminho especial para ele.
+                    for frag in fragmentos:
+                        nome_frag = f"HONORARIOS_{frag['prestador']}_{nome}"
+                        auditoria_frag = {chave: [] for chave in auditoria}
+                        auditoria_frag['fragmentados'] = [
+                            f"Procedimento {item['cod_proc']} (Plano {item['plano']}) — origem: '{nome}'."
+                            for item in frag['itens']
+                        ]
+                        resultados.append({
+                            'nome': nome_frag, 'xml_bytes': frag['xml_bytes'],
+                            'auditoria': auditoria_frag, 'falha_total': None,
+                        })
                 except Exception as e:
                     resultado['falha_total'] = str(e)
-                resultados.append(resultado)
+                    resultados.append(resultado)
                 barra.set_value((i + 1) / len(pendentes))
             # Junta os arquivos deste lote aos que já estavam na lista, em vez
             # de substituir tudo. Se um arquivo com o mesmo nome já tiver sido
