@@ -36,7 +36,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
-from nicegui import ui
+from nicegui import ui, app
 
 # ==========================================
 # NAMESPACES E HELPERS TISS (idêntico à versão Streamlit)
@@ -828,19 +828,50 @@ ui.add_head_html("""
         --tiss-accent: #0f766e;
         --tiss-accent-suave: #ccfbf1;
         --tiss-borda: #e2e8f0;
+        --tiss-bg: #f4f7f6;
+        --tiss-bg-painel: #ffffff;
+        --tiss-texto: #374151;
+        --tiss-texto-forte: #1f2937;
+        --tiss-texto-suave: #4b5563;
+        --tiss-sombra: rgba(15, 23, 42, 0.06);
+        --tiss-sombra-hover: rgba(15, 23, 42, 0.08);
+        --tiss-diff-bg: #fffbeb;
+        --tiss-diff-borda: #d97706;
+        --tiss-diff-linha: #92400e;
     }
-    body { background-color: #f4f7f6 !important; }
+    /* Tema escuro: aplicado quando o Quasar liga o dark mode (ver botão de
+       tema no topo da página, controlado por ui.dark_mode() no Python). */
+    body.body--dark {
+        --tiss-accent: #2dd4bf;
+        --tiss-accent-suave: #134e4a;
+        --tiss-borda: #334155;
+        --tiss-bg: #0f172a;
+        --tiss-bg-painel: #1e293b;
+        --tiss-texto: #cbd5e1;
+        --tiss-texto-forte: #f1f5f9;
+        --tiss-texto-suave: #94a3b8;
+        --tiss-sombra: rgba(0, 0, 0, 0.35);
+        --tiss-sombra-hover: rgba(0, 0, 0, 0.5);
+        --tiss-diff-bg: #3a2f0f;
+        --tiss-diff-borda: #d97706;
+        --tiss-diff-linha: #fbbf24;
+    }
+
+    body { background-color: var(--tiss-bg) !important; transition: background-color .15s ease; }
 
     .q-card {
         border-radius: 10px !important;
+        background-color: var(--tiss-bg-painel) !important;
+        color: var(--tiss-texto-forte) !important;
+        transition: background-color .15s ease, color .15s ease;
     }
 
     .tiss-header, .tiss-toolbar, .tiss-statusbar, .tiss-panel {
-        background-color: #ffffff;
+        background-color: var(--tiss-bg-painel);
         border: 1px solid var(--tiss-borda);
         border-radius: 8px;
-        box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
-        transition: box-shadow .15s ease;
+        box-shadow: 0 1px 3px var(--tiss-sombra);
+        transition: box-shadow .15s ease, background-color .15s ease, border-color .15s ease;
     }
     .tiss-header {
         padding: 8px 14px;
@@ -854,27 +885,35 @@ ui.add_head_html("""
     .tiss-toolbar .q-btn:hover {
         background-color: var(--tiss-accent-suave);
     }
-    .tiss-statusbar { padding: 6px 14px; font-size: 12.5px; color: #374151; }
+    .tiss-statusbar { padding: 6px 14px; font-size: 12.5px; color: var(--tiss-texto); }
     .tiss-panel { padding: 10px; height: 74vh; overflow-y: auto; }
-    .tiss-panel:hover { box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08); }
+    .tiss-panel:hover { box-shadow: 0 2px 6px var(--tiss-sombra-hover); }
 
     .tiss-app-name { font-weight: 700; color: var(--tiss-accent); font-size: 15px; }
-    .tiss-file-name { font-weight: 600; color: #374151; margin-left: 10px; transition: color .15s ease; }
+    .tiss-file-name { font-weight: 600; color: var(--tiss-texto); margin-left: 10px; transition: color .15s ease; }
     .tiss-file-name.modificado { color: #b45309; }
 
     .diff-item {
-        border-left: 3px solid #d97706;
-        background-color: #fffbeb;
+        border-left: 3px solid var(--tiss-diff-borda);
+        background-color: var(--tiss-diff-bg);
         padding: 7px 9px;
         margin-bottom: 6px;
         border-radius: 5px;
         font-size: 12.5px;
-        transition: box-shadow .12s ease;
+        transition: box-shadow .12s ease, background-color .15s ease;
     }
-    .diff-item:hover { box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08); }
-    .diff-linha { color: #92400e; font-weight: 700; font-size: 11px; }
-    .diff-campo { color: #1f2937; font-weight: 600; }
-    .diff-valores { color: #4b5563; font-family: 'Consolas', monospace; font-size: 11.5px; }
+    .diff-item:hover { box-shadow: 0 1px 4px var(--tiss-sombra-hover); }
+    .diff-linha { color: var(--tiss-diff-linha); font-weight: 700; font-size: 11px; }
+    .diff-campo { color: var(--tiss-texto-forte); font-weight: 600; }
+    .diff-valores { color: var(--tiss-texto-suave); font-family: 'Consolas', monospace; font-size: 11.5px; }
+
+    /* Ajusta, no tema escuro, as classes de texto tipo Tailwind usadas em
+       vários pontos do app (avisos, status, rótulos secundários) para
+       manter contraste legível sobre fundo escuro. */
+    body.body--dark .text-gray-600, body.body--dark .text-gray-500 { color: #94a3b8 !important; }
+    body.body--dark .text-red-700 { color: #f87171 !important; }
+    body.body--dark .text-green-700 { color: #4ade80 !important; }
+    body.body--dark .text-amber-700 { color: #fbbf24 !important; }
 </style>
 <script>
     // Aviso nativo do navegador ao tentar fechar/recarregar a aba com
@@ -917,8 +956,31 @@ def pagina_principal():
         'resultados_lote': [],
         'lote_id': 0,
         'arquivo_selecionado': None,  # nome do arquivo escolhido no seletor, para sobreviver a um refresh do painel
+        'tema_escuro': app.storage.user.get('tiss_tema_escuro', False),  # preferência de tema, lembrada por navegador
     }
     editores = {}  # chave: (lote_id, nome_arquivo) -> dict com o estado do editor daquele arquivo
+
+    # ==========================================
+    # TEMA CLARO / ESCURO — controla o dark mode nativo do Quasar (que
+    # dispara as regras "body.body--dark" do CSS acima) e troca o tema do
+    # editor CodeMirror de cada aba de XML já aberta. A escolha é lembrada
+    # por navegador (app.storage.user), então persiste entre visitas.
+    # ==========================================
+    modo_escuro = ui.dark_mode(value=estado['tema_escuro'])
+
+    def alternar_tema(e):
+        estado['tema_escuro'] = e.value
+        app.storage.user['tiss_tema_escuro'] = e.value
+        modo_escuro.set_value(e.value)
+        novo_tema_editor = 'basicDark' if e.value else 'basicLight'
+        for ed in editores.values():
+            if ed.get('ui_editor') is not None:
+                ed['ui_editor'].set_theme(novo_tema_editor)
+
+    with ui.row().classes('w-full items-center justify-end gap-2'):
+        ui.icon('light_mode').classes('text-sm')
+        ui.switch(value=estado['tema_escuro'], on_change=alternar_tema).props('color=primary dense').tooltip('Alternar entre tema claro e escuro')
+        ui.icon('dark_mode').classes('text-sm')
 
     with ui.column().classes('w-full max-w-none gap-2'):
         if avisos_sheets:
@@ -1101,6 +1163,7 @@ def construir_editor_xml(estado, editores, resultado):
             'historico': [],
             'futuro': [],
             'erro_validacao': None,
+            'ui_editor': None,  # referência ao CodeMirror desta aba, preenchida abaixo (usada para trocar o tema claro/escuro depois de aberto)
         }
     ed = editores[chave]
 
@@ -1152,8 +1215,10 @@ def construir_editor_xml(estado, editores, resultado):
 
         with ui.row().classes('w-full gap-2 no-wrap').style('height: 76vh'):
             with ui.column().classes('gap-0').style('flex: 4; height: 100%'):
-                editor = ui.codemirror(value=ed['texto_atual'], language='XML', theme='basicLight') \
+                tema_editor = 'basicDark' if estado.get('tema_escuro') else 'basicLight'
+                editor = ui.codemirror(value=ed['texto_atual'], language='XML', theme=tema_editor) \
                     .classes('w-full h-full border').style('font-size: 13px')
+                ed['ui_editor'] = editor
             with ui.column().classes('gap-0 tiss-panel').style('flex: 1; min-width: 260px'):
                 ui.label('ALTERAÇÕES').classes('font-bold text-sm mb-1')
                 painel_alteracoes = ui.column().classes('w-full gap-0')
