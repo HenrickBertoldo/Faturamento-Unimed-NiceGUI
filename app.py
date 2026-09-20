@@ -1376,7 +1376,7 @@ def construir_editor_xml(estado, editores, resultado):
 
 
 ui.run(
-    title='Validador TISS',
+    title='Validador e Corretor XML Unimed',
     port=int(os.environ.get('PORT', 8080)),
     reload=False,
     show=False,  # não há navegador local para abrir num servidor publicado
