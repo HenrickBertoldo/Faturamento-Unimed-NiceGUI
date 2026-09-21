@@ -407,6 +407,12 @@ def validar_e_recalcular_xml_editado(texto_editado):
 # mesma convenção — ajuste-os se o nome/registro oficial mudar.
 _CODIGO_HOSPITAL_UMC = '110591'
 _NOME_HOSPITAL_UMC = 'COMPLEXO HOSPITALAR UBERLANDIA SA - UMC'
+# Nome usado no início do arquivo de fragmento, por prestador (ex.: 220163 é
+# a equipe de cirurgia torácica). Prestadores fragmentados que ainda não
+# tenham um nome cadastrado aqui caem no fallback genérico "HONORARIOS_<cod>".
+NOMES_FRAGMENTO_POR_PRESTADOR = {
+    '220163': 'TORACICA',
+}
 
 def _texto_de(pai, caminho):
     """Busca um elemento pelo caminho XPath (namespace 'ans') e devolve seu
@@ -541,6 +547,12 @@ def construir_fragmento_honorarios(root_original, prestador_frag, itens):
     cabecalho_original = root_original.find('.//ans:cabecalho', NS)
     lote_original = root_original.find('.//ans:loteGuias/ans:numeroLote', NS)
     data_emissao = _texto_de(cabecalho_original, './/ans:dataRegistroTransacao')
+    # Número de lote do fragmento: o MESMO número de lote do arquivo
+    # principal, só que com um 'T' na frente (ex.: lote 551961 do principal
+    # ➔ T551961 no fragmento) — identifica visualmente que aquele lote é um
+    # fragmento de honorários, e não inventa uma numeração nova.
+    numero_lote_original = lote_original.text if lote_original is not None and lote_original.text else ''
+    numero_lote_frag = f"T{numero_lote_original}" if numero_lote_original else ''
 
     root_frag = ET.Element(ans_tag('mensagemTISS'), dict(root_original.attrib))
     tree_frag = ET.ElementTree(root_frag)
@@ -564,7 +576,7 @@ def construir_fragmento_honorarios(root_original, prestador_frag, itens):
 
     prestador_para_operadora = ET.SubElement(root_frag, ans_tag('prestadorParaOperadora'))
     lote_guias = ET.SubElement(prestador_para_operadora, ans_tag('loteGuias'))
-    ET.SubElement(lote_guias, ans_tag('numeroLote')).text = (lote_original.text if lote_original is not None and lote_original.text else '')
+    ET.SubElement(lote_guias, ans_tag('numeroLote')).text = numero_lote_frag
     guias_tiss = ET.SubElement(lote_guias, ans_tag('guiasTISS'))
 
     # Agrupa por guia de origem: uma guiaHonorarios por internação de origem,
@@ -581,7 +593,7 @@ def construir_fragmento_honorarios(root_original, prestador_frag, itens):
     epilogo = ET.SubElement(root_frag, ans_tag('epilogo'))
     ET.SubElement(epilogo, ans_tag('hash'))
 
-    return tree_frag, root_frag
+    return tree_frag, root_frag, numero_lote_frag
 
 def processar_xml_tiss(arquivo_xml, dfs):
     auditoria = {
@@ -1056,9 +1068,12 @@ def processar_xml_tiss(arquivo_xml, dfs):
     for prestador_frag, itens_frag in fragmentos_coletados.items():
         if not itens_frag:
             continue
-        tree_frag, root_frag = construir_fragmento_honorarios(root, prestador_frag, itens_frag)
+        tree_frag, root_frag, numero_lote_frag = construir_fragmento_honorarios(root, prestador_frag, itens_frag)
         xml_frag_bytes = recalcular_hash_e_serializar(tree_frag, root_frag)
-        fragmentos.append({'prestador': prestador_frag, 'xml_bytes': xml_frag_bytes, 'itens': itens_frag})
+        fragmentos.append({
+            'prestador': prestador_frag, 'xml_bytes': xml_frag_bytes, 'itens': itens_frag,
+            'numero_lote': numero_lote_frag,
+        })
 
     return xml_bytes, auditoria, fragmentos
 
@@ -1345,7 +1360,9 @@ def construir_aba_processamento(estado, editores):
                     # ZIP de "Baixar Todos", reaproveitando toda a infra já
                     # existente em vez de criar um caminho especial para ele.
                     for frag in fragmentos:
-                        nome_frag = f"HONORARIOS_{frag['prestador']}_{nome}"
+                        prefixo_frag = NOMES_FRAGMENTO_POR_PRESTADOR.get(frag['prestador'], f"HONORARIOS_{frag['prestador']}")
+                        _, extensao_original = os.path.splitext(nome)
+                        nome_frag = f"{prefixo_frag}_{frag['numero_lote'] or frag['prestador']}{extensao_original or '.xml'}"
                         auditoria_frag = {chave: [] for chave in auditoria}
                         auditoria_frag['fragmentados'] = [
                             f"Procedimento {item['cod_proc']} (Plano {item['plano']}) — origem: '{nome}'."
@@ -1552,9 +1569,6 @@ def construir_editor_xml(estado, editores, resultado):
             with ui.row().classes('items-center gap-0'):
                 ui.label('📄 Validador TISS').classes('tiss-app-name')
                 label_arquivo = ui.label(nome_arquivo).classes('tiss-file-name')
-            botao_salvar_header = ui.button('Salvar', icon='save', color='primary')
-            with botao_salvar_header:
-                tooltip_salvar = ui.tooltip('')
 
         with ui.row().classes('w-full items-center tiss-toolbar gap-1'):
             botao_desfazer = ui.button(icon='undo').props('flat dense').tooltip('Desfazer')
@@ -1572,7 +1586,7 @@ def construir_editor_xml(estado, editores, resultado):
                             botao_sub_todos = ui.button('Substituir todos', color='primary').props('dense size=sm')
             botao_validar = ui.button(icon='check_circle').props('flat dense').tooltip('Validar XML')
             botao_recarregar = ui.button(icon='refresh').props('flat dense').tooltip('Recarregar (descarta alterações)')
-            botao_baixar = ui.button(icon='download').props('flat dense').tooltip('Baixar XML')
+            botao_baixar = ui.button(icon='download').props('flat dense').tooltip('Validar, recalcular hash e baixar XML')
             botao_copiar = ui.button(icon='content_copy').props('flat dense').tooltip('Copiar código-fonte')
 
         with ui.row().classes('w-full gap-2 no-wrap').style('height: 76vh'):
@@ -1639,12 +1653,6 @@ def construir_editor_xml(estado, editores, resultado):
         label_arquivo.text = f"{nome_arquivo} *" if alterado else nome_arquivo
         label_arquivo.classes(replace='tiss-file-name modificado' if alterado else 'tiss-file-name')
 
-        botao_salvar_header.set_enabled(alterado)
-        tooltip_salvar.text = (
-            'Salva as alterações feitas no texto, recalcula o hash e baixa o arquivo final.' if alterado
-            else 'Nada para salvar: o texto no editor é idêntico ao já corrigido automaticamente. '
-                 'Para baixar o arquivo corrigido, use os botões de download da lista de arquivos.'
-        )
         botao_desfazer.set_enabled(bool(ed['historico']))
         botao_refazer.set_enabled(bool(ed['futuro']))
 
@@ -1714,7 +1722,12 @@ def construir_editor_xml(estado, editores, resultado):
         _debounce['timer'] = ui.timer(0.5, lambda: _fim_da_rajada(alterado), once=True)
     editor.on_value_change(ao_digitar)
 
-    def salvar(_=None):
+    def baixar(_=None):
+        # Antes existiam dois botões (Salvar e Baixar) fazendo praticamente
+        # a mesma coisa. Agora "Baixar" sozinho: valida o texto atual do
+        # editor, recalcula o hash oficial da ANS e já dispara o download —
+        # funciona tanto para um arquivo sem edição manual (baixa o já
+        # corrigido automaticamente) quanto para um que foi editado à mão.
         novos_bytes, erro = validar_e_recalcular_xml_editado(ed['texto_atual'])
         if erro:
             ed['erro_validacao'] = erro
@@ -1726,15 +1739,12 @@ def construir_editor_xml(estado, editores, resultado):
         ed['hash_atual'] = _extrair_hash_do_texto(novo_texto_final)
         ed['salvo_alguma_vez'] = True
         resultado['xml_bytes'] = novos_bytes
-        # Além de validar e recalcular o hash, já dispara o download do
-        # arquivo final automaticamente. O "Salvar" nunca escreve nada no
-        # disco por conta própria (o Python roda no servidor, não na máquina
-        # de quem está usando o app) — quem efetivamente coloca o arquivo no
-        # computador é sempre o download do navegador. Antes, isso exigia
-        # dois cliques (Salvar, depois Baixar); agora sai em um só.
+        # O Python roda no servidor, não na máquina de quem está usando o
+        # app — quem efetivamente coloca o arquivo no computador é sempre o
+        # download do navegador, disparado aqui.
         ui.download.content(novos_bytes, f"PRONTO_{nome_arquivo}", media_type='application/xml')
-        ui.notify('✅ Alterações salvas, hash recalculado e download iniciado.', type='positive')
-    botao_salvar_header.on('click', salvar)
+        ui.notify('✅ Hash recalculado e download iniciado.', type='positive')
+    botao_baixar.on('click', baixar)
 
     def desfazer(_=None):
         if ed['historico']:
@@ -1787,10 +1797,6 @@ def construir_editor_xml(estado, editores, resultado):
         except Exception as e:
             ui.notify(f'✕ XML inválido: {e}', type='negative')
     botao_validar.on('click', validar)
-
-    def baixar(_=None):
-        ui.download.content(resultado['xml_bytes'], f"PRONTO_{nome_arquivo}", media_type='application/xml')
-    botao_baixar.on('click', baixar)
 
     def copiar(_=None):
         ui.run_javascript(f"navigator.clipboard.writeText({ed['texto_atual']!r})")
