@@ -103,12 +103,23 @@ tabelas_padrao = {
 }
 
 def formatar_tabela_padrao(df):
+    # Converte o DataFrame inteiro para string de uma vez, ANTES de mexer
+    # coluna por coluna. Isso resolve dois problemas ao mesmo tempo: (1)
+    # .astype(str) sempre devolve um DataFrame novo e independente, sem
+    # nenhuma ligação de memória com o original, então as atribuições
+    # abaixo não disparam o aviso de "chained assignment"; e (2) quando uma
+    # coluna do Sheets vem toda numérica (ex.: só códigos, sem nenhum texto
+    # misturado), o pandas guarda ela como int64 — tentar colocar texto
+    # numa coluna int64 depois é que gerava o aviso de "dtype incompatível"
+    # (que no futuro vira erro de verdade). Como a coluna já nasce como
+    # texto aqui, esse conflito de tipo nunca chega a acontecer.
+    df = df.astype(str)
     for col in df.columns:
-        df.loc[:, col] = df[col].astype(str).str.strip().str.upper()
-        df.loc[:, col] = df[col].replace(['NAN', 'NONE', '<NA>'], '')
+        df[col] = df[col].str.strip().str.upper()
+        df[col] = df[col].replace(['NAN', 'NONE', '<NA>'], '')
         col_upper = col.upper()
         if any(k in col_upper for k in ['CONSELHO', 'UF', 'GRAU PART', 'VIA DE ACESSO', 'TÉCNICA']):
-            df.loc[:, col] = df[col].apply(lambda x: x.zfill(2) if (x.isdigit() and len(x) == 1) else x)
+            df[col] = df[col].apply(lambda x: x.zfill(2) if (x.isdigit() and len(x) == 1) else x)
     return df
 
 
@@ -208,9 +219,9 @@ def carregar_tabelas_do_sheets():
                 ws = sh.worksheet(aba)
                 registros = ws.get_all_records()
                 if registros:
-                    df = pd.DataFrame(registros)
+                    df = pd.DataFrame(registros).astype(str)
                     for col in df.columns:
-                        df.loc[:, col] = df[col].astype(str).apply(limpar_numero)
+                        df[col] = df[col].apply(limpar_numero)
                     df = formatar_tabela_padrao(df)
             except Exception as e:
                 avisos.append(f"Aba '{aba}': {e}")
