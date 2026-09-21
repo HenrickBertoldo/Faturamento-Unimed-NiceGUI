@@ -103,23 +103,23 @@ tabelas_padrao = {
 }
 
 def formatar_tabela_padrao(df):
-    # Converte o DataFrame inteiro para string de uma vez, ANTES de mexer
-    # coluna por coluna. Isso resolve dois problemas ao mesmo tempo: (1)
-    # .astype(str) sempre devolve um DataFrame novo e independente, sem
-    # nenhuma ligação de memória com o original, então as atribuições
-    # abaixo não disparam o aviso de "chained assignment"; e (2) quando uma
-    # coluna do Sheets vem toda numérica (ex.: só códigos, sem nenhum texto
-    # misturado), o pandas guarda ela como int64 — tentar colocar texto
-    # numa coluna int64 depois é que gerava o aviso de "dtype incompatível"
-    # (que no futuro vira erro de verdade). Como a coluna já nasce como
-    # texto aqui, esse conflito de tipo nunca chega a acontecer.
+    # Duas causas diferentes de warning, duas partes da correção:
+    # 1) .astype(str) logo de cara garante que toda coluna já nasce como
+    #    texto — sem isso, uma coluna 100% numérica vinda do Sheets fica
+    #    como int64, e tentar colocar texto nela depois dispara o aviso de
+    #    "dtype incompatível" (que no futuro vira erro de verdade).
+    # 2) usar df.loc[:, col] (em vez de df[col]) para a atribuição em si é
+    #    a forma que o próprio pandas recomenda para não disparar o aviso
+    #    de "chained assignment" — só o astype(str) sozinho NÃO resolve
+    #    isso, porque quem dispara esse aviso é a sintaxe da atribuição
+    #    (df[col] = ...), não o histórico do DataFrame.
     df = df.astype(str)
     for col in df.columns:
-        df[col] = df[col].str.strip().str.upper()
-        df[col] = df[col].replace(['NAN', 'NONE', '<NA>'], '')
+        df.loc[:, col] = df[col].str.strip().str.upper()
+        df.loc[:, col] = df[col].replace(['NAN', 'NONE', '<NA>'], '')
         col_upper = col.upper()
         if any(k in col_upper for k in ['CONSELHO', 'UF', 'GRAU PART', 'VIA DE ACESSO', 'TÉCNICA']):
-            df[col] = df[col].apply(lambda x: x.zfill(2) if (x.isdigit() and len(x) == 1) else x)
+            df.loc[:, col] = df[col].apply(lambda x: x.zfill(2) if (x.isdigit() and len(x) == 1) else x)
     return df
 
 
@@ -221,7 +221,7 @@ def carregar_tabelas_do_sheets():
                 if registros:
                     df = pd.DataFrame(registros).astype(str)
                     for col in df.columns:
-                        df[col] = df[col].apply(limpar_numero)
+                        df.loc[:, col] = df[col].apply(limpar_numero)
                     df = formatar_tabela_padrao(df)
             except Exception as e:
                 avisos.append(f"Aba '{aba}': {e}")
