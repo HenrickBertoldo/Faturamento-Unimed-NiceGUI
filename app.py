@@ -662,7 +662,17 @@ def processar_xml_tiss(arquivo_xml, dfs):
                 continue
             cfg = dict_fragmentacao.setdefault(prestador_frag, {'planos': set(), 'procedimentos': set()})
             if tipo == 'PLANO':
-                cfg['planos'].add(limpar_numero(codigo_bruto))
+                # O prefixo de plano tem sempre 4 dígitos (mesmo tamanho usado
+                # por identificar_plano_pela_carteira). Se a célula "Código"
+                # não estiver formatada como texto no Sheets, "0014" chega
+                # aqui como o número 14 — sem repor os zeros à esquerda até 4
+                # dígitos, esse código nunca bateria com o prefixo real da
+                # carteirinha, e a fragmentação ficaria silenciosamente sem
+                # efeito (mesmo com a regra certinha na planilha).
+                codigo_plano = limpar_numero(codigo_bruto)
+                if codigo_plano.isdigit() and len(codigo_plano) < 4:
+                    codigo_plano = codigo_plano.zfill(4)
+                cfg['planos'].add(codigo_plano)
             else:
                 cfg['procedimentos'].add(padronizar_codigo_8_digitos(codigo_bruto))
     fragmentos_coletados = {}  # {codigo_prestador: [itens fragmentados desta execução]}
@@ -1543,6 +1553,8 @@ def construir_editor_xml(estado, editores, resultado):
                 ui.label('📄 Validador TISS').classes('tiss-app-name')
                 label_arquivo = ui.label(nome_arquivo).classes('tiss-file-name')
             botao_salvar_header = ui.button('Salvar', icon='save', color='primary')
+            with botao_salvar_header:
+                tooltip_salvar = ui.tooltip('')
 
         with ui.row().classes('w-full items-center tiss-toolbar gap-1'):
             botao_desfazer = ui.button(icon='undo').props('flat dense').tooltip('Desfazer')
@@ -1628,6 +1640,11 @@ def construir_editor_xml(estado, editores, resultado):
         label_arquivo.classes(replace='tiss-file-name modificado' if alterado else 'tiss-file-name')
 
         botao_salvar_header.set_enabled(alterado)
+        tooltip_salvar.text = (
+            'Salva as alterações feitas no texto, recalcula o hash e baixa o arquivo final.' if alterado
+            else 'Nada para salvar: o texto no editor é idêntico ao já corrigido automaticamente. '
+                 'Para baixar o arquivo corrigido, use os botões de download da lista de arquivos.'
+        )
         botao_desfazer.set_enabled(bool(ed['historico']))
         botao_refazer.set_enabled(bool(ed['futuro']))
 
