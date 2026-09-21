@@ -1383,6 +1383,16 @@ def construir_aba_processamento(estado, editores):
                             'nome': nome_frag, 'xml_bytes': frag['xml_bytes'],
                             'auditoria': auditoria_frag, 'falha_total': None,
                         })
+                    # 🆕 Vincula o principal a cada fragmento gerado a partir
+                    # dele (e vice-versa): assim, baixando qualquer um dos
+                    # arquivos do grupo pelo botão de download normal, os
+                    # outros do mesmo grupo saem juntos — sem precisar do
+                    # ZIP "Baixar Todos" só para pegar os dois de uma
+                    # fragmentação.
+                    if fragmentos:
+                        nomes_do_grupo = [nome] + [r['nome'] for r in resultados[-len(fragmentos):]]
+                        for r_grupo in resultados[-len(fragmentos) - 1:]:
+                            r_grupo['arquivos_relacionados'] = nomes_do_grupo
                 except Exception as e:
                     resultado['falha_total'] = str(e)
                     resultados.append(resultado)
@@ -1476,13 +1486,11 @@ def painel_resultados(estado, editores):
         resultado = next(r for r in sucesso if r['nome'] == nome_escolhido)
 
         aud = resultado.get('auditoria') or {}
-        with ui.row().classes('w-full mt-2 gap-6'):
-            ui.label(f"🔀 Médicos Trocados: {len(aud.get('medicos_trocados', []))}").classes('text-sm')
-            ui.label(f"👩‍⚕️ CBOs/Cods: {len(aud.get('cbos', []))}").classes('text-sm')
-            ui.label(f"➖ Valores Negativos: {len(aud.get('valores_negativos', []))}").classes('text-sm')
-            ui.label(f"🔄 Itens Traduzidos: {len(aud.get('itens', []))}").classes('text-sm')
-            ui.label(f"⏱️ Tempos O²: {len(aud.get('oxigenio', []))}").classes('text-sm')
-            ui.label(f"🛡️ Guia(s) Blindada(s): {len(aud.get('guias_blindadas', []))}").classes('text-sm')
+        with ui.row().classes('w-full mt-2 gap-x-6 gap-y-1 flex-wrap'):
+            for chave_aud, titulo_aud in TITULOS_AMIGAVEIS_AUDITORIA.items():
+                if chave_aud == 'erros':
+                    continue  # erros/avisos têm destaque próprio, logo abaixo
+                ui.label(f"{titulo_aud}: {len(aud.get(chave_aud, []))}").classes('text-sm')
         if aud.get('erros'):
             ui.label(f"⚠️ {len(aud['erros'])} aviso(s)/erro(s) pontual(is) durante o processamento.").classes('text-sm text-amber-700 mt-1')
 
@@ -1754,7 +1762,26 @@ def construir_editor_xml(estado, editores, resultado):
         # app — quem efetivamente coloca o arquivo no computador é sempre o
         # download do navegador, disparado aqui.
         ui.download.content(novos_bytes, f"PRONTO_{nome_arquivo}", media_type='application/xml')
-        ui.notify('✅ Hash recalculado e download iniciado.', type='positive')
+
+        # 🆕 Se este arquivo fez parte de uma fragmentação (é o principal ou
+        # é um dos fragmentos gerados a partir dele), baixa também os outros
+        # arquivos do mesmo grupo — assim um clique só no botão de download
+        # já traz tudo, sem precisar recorrer ao ZIP "Baixar Todos".
+        nomes_relacionados = [n for n in (resultado.get('arquivos_relacionados') or []) if n != nome_arquivo]
+        baixados_junto = []
+        for nome_rel in nomes_relacionados:
+            r_rel = next((r for r in estado['resultados_lote'] if r['nome'] == nome_rel and not r.get('falha_total')), None)
+            if r_rel and r_rel.get('xml_bytes'):
+                ui.download.content(r_rel['xml_bytes'], f"PRONTO_{r_rel['nome']}", media_type='application/xml')
+                baixados_junto.append(r_rel['nome'])
+
+        if baixados_junto:
+            ui.notify(
+                f"✅ Hash recalculado. Este arquivo foi fragmentado — baixado junto com: {', '.join(baixados_junto)}.",
+                type='positive', multi_line=True,
+            )
+        else:
+            ui.notify('✅ Hash recalculado e download iniciado.', type='positive')
     botao_baixar.on('click', baixar)
 
     def desfazer(_=None):
