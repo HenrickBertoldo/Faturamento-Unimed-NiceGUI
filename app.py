@@ -36,7 +36,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
-from nicegui import ui, app
+from nicegui import ui
 
 # ==========================================
 # NAMESPACES E HELPERS TISS (idêntico à versão Streamlit)
@@ -64,28 +64,9 @@ def limpar_numero(valor):
     elif v.endswith('.0'): v = v[:-2]
     return v
 
-def identificar_plano_pela_carteira(numero_carteira):
-    """Identifica o plano do beneficiário a partir do início/prefixo da
-    carteirinha. Reaproveita o MESMO tamanho de prefixo (4 dígitos) que a
-    aplicação já usa para reconhecer a Unimed 0014 (ver 'eh_unimed_0014' em
-    processar_xml_tiss) — não inventa um novo tamanho de prefixo nem uma
-    nova regra de identificação, apenas generaliza a lógica existente para
-    também poder ser comparada com uma lista de planos contratados."""
-    return (numero_carteira or '')[:4]
-
 def padronizar_codigo_8_digitos(cod):
-    """Garante 8 dígitos num código totalmente numérico, repondo à esquerda
-    quantos zeros forem necessários. Isso importa porque, quando uma célula
-    do Google Sheets é interpretada como número (em vez de texto), TODOS os
-    zeros à esquerda são descartados — não só um. Um código como '00146803'
-    (dois zeros à esquerda) vira '146803' na planilha; a versão antiga desta
-    função só sabia repor exatamente 1 zero (caso de 7 dígitos), então um
-    código que perdeu 2 zeros ou mais nunca voltava a bater com o mesmo
-    código extraído do XML, e a substituição na tabela 'itens' (ou em
-    qualquer outra tabela que use códigos de 8 dígitos) ficava sem efeito
-    silenciosamente."""
     c = limpar_numero(cod)
-    return c.zfill(8) if c.isdigit() and len(c) < 8 else c
+    return "0" + c if len(c) == 7 and c.isdigit() else c
 
 
 # ==========================================
@@ -96,30 +77,19 @@ tabelas_padrao = {
     'medicos': pd.DataFrame(columns=['Nome do Médico', 'CBO Correto', 'Substituir por Cód. Operadora', 'Código na Operadora']),
     'procedimentos': pd.DataFrame(columns=['Código do Procedimento', 'Grau Part Obrigatório', 'Via de Acesso (1, 2 ou EXCLUIR)', 'Técnica (1, 2 ou EXCLUIR)']),
     'conveniados': pd.DataFrame(columns=['Nome do Médico Conveniado']),
-    'blindagem': pd.DataFrame(columns=['Código Prestador Protegido', 'Tipo', 'Código']),
+    'blindagem': pd.DataFrame(columns=['Código Prestador Protegido']),
     'itens': pd.DataFrame(columns=['Código Incorreto', 'Código Correto']),
     'unidades': pd.DataFrame(columns=['Código do Item', 'Unidade de Medida Correta']),
     'anvisa': pd.DataFrame(columns=['Código do Item', 'Registro ANVISA', 'Ref. Fabricante'])
 }
 
 def formatar_tabela_padrao(df):
-    # Duas causas diferentes de warning, duas partes da correção:
-    # 1) .astype(str) logo de cara garante que toda coluna já nasce como
-    #    texto — sem isso, uma coluna 100% numérica vinda do Sheets fica
-    #    como int64, e tentar colocar texto nela depois dispara o aviso de
-    #    "dtype incompatível" (que no futuro vira erro de verdade).
-    # 2) usar df.loc[:, col] (em vez de df[col]) para a atribuição em si é
-    #    a forma que o próprio pandas recomenda para não disparar o aviso
-    #    de "chained assignment" — só o astype(str) sozinho NÃO resolve
-    #    isso, porque quem dispara esse aviso é a sintaxe da atribuição
-    #    (df[col] = ...), não o histórico do DataFrame.
-    df = df.astype(str)
     for col in df.columns:
-        df.loc[:, col] = df[col].str.strip().str.upper()
-        df.loc[:, col] = df[col].replace(['NAN', 'NONE', '<NA>'], '')
+        df[col] = df[col].astype(str).str.strip().str.upper()
+        df[col] = df[col].replace(['NAN', 'NONE', '<NA>'], '')
         col_upper = col.upper()
         if any(k in col_upper for k in ['CONSELHO', 'UF', 'GRAU PART', 'VIA DE ACESSO', 'TÉCNICA']):
-            df.loc[:, col] = df[col].apply(lambda x: x.zfill(2) if (x.isdigit() and len(x) == 1) else x)
+            df[col] = df[col].apply(lambda x: x.zfill(2) if (x.isdigit() and len(x) == 1) else x)
     return df
 
 
@@ -219,9 +189,9 @@ def carregar_tabelas_do_sheets():
                 ws = sh.worksheet(aba)
                 registros = ws.get_all_records()
                 if registros:
-                    df = pd.DataFrame(registros).astype(str)
+                    df = pd.DataFrame(registros)
                     for col in df.columns:
-                        df.loc[:, col] = df[col].apply(limpar_numero)
+                        df[col] = df[col].astype(str).apply(limpar_numero)
                     df = formatar_tabela_padrao(df)
             except Exception as e:
                 avisos.append(f"Aba '{aba}': {e}")
@@ -408,209 +378,11 @@ def validar_e_recalcular_xml_editado(texto_editado):
         return None, f"Falha ao recalcular o hash/serializar o XML: {e}"
     return xml_bytes, None
 
-# ==========================================================================
-# 🆕 FRAGMENTAÇÃO DE PROCEDIMENTOS PARA OUTRO PRESTADOR (ex.: 220163)
-# ==========================================================================
-# Constantes fixas do hospital/UMC contratante (código 110591) usadas quando
-# o valor não está disponível na própria guia de origem. Este aplicativo já
-# atende especificamente a este hospital em outras regras (ex.: prefixo de
-# carteirinha '0014' da Unimed), então fixar esses dois valores aqui segue a
-# mesma convenção — ajuste-os se o nome/registro oficial mudar.
-_CODIGO_HOSPITAL_UMC = '110591'
-_NOME_HOSPITAL_UMC = 'COMPLEXO HOSPITALAR UBERLANDIA SA - UMC'
-# Nome usado no início do arquivo de fragmento, por prestador (ex.: 220163 é
-# a equipe de cirurgia torácica). Prestadores fragmentados que ainda não
-# tenham um nome cadastrado aqui caem no fallback genérico "HONORARIOS_<cod>".
-NOMES_FRAGMENTO_POR_PRESTADOR = {
-    '220163': 'TORACICA',
-}
-
-def _texto_de(pai, caminho):
-    """Busca um elemento pelo caminho XPath (namespace 'ans') e devolve seu
-    texto, ou None se o elemento não existir ou estiver vazio."""
-    if pai is None:
-        return None
-    elem = pai.find(caminho, NS)
-    return elem.text if elem is not None and elem.text else None
-
-def _adicionar_procedimento_realizado(procs_realizados_pai, proc_exec_origem, prestador_frag, sequencial):
-    """Copia um procedimentoExecutado (modelo de guiaResumoInternacao) para
-    um procedimentoRealizado (modelo de guiaHonorarios), remapeando os nomes
-    de campo conforme o XML de referência do fragmento 220163. Devolve o
-    valorTotal do item, para acumular o total de honorários da guia."""
-    pr = ET.SubElement(procs_realizados_pai, ans_tag('procedimentoRealizado'))
-
-    ET.SubElement(pr, ans_tag('sequencialItem')).text = _texto_de(proc_exec_origem, 'ans:sequencialItem') or str(sequencial)
-    for campo in ('dataExecucao', 'horaInicial', 'horaFinal'):
-        valor = _texto_de(proc_exec_origem, f'ans:{campo}')
-        if valor: ET.SubElement(pr, ans_tag(campo)).text = valor
-
-    proc_origem = proc_exec_origem.find('ans:procedimento', NS)
-    procedimento = ET.SubElement(pr, ans_tag('procedimento'))
-    for campo in ('codigoTabela', 'codigoProcedimento', 'descricaoProcedimento'):
-        valor = _texto_de(proc_origem, f'ans:{campo}')
-        if valor: ET.SubElement(procedimento, ans_tag(campo)).text = valor
-
-    for campo in ('quantidadeExecutada', 'viaAcesso', 'tecnicaUtilizada', 'reducaoAcrescimo', 'valorUnitario', 'valorTotal'):
-        valor = _texto_de(proc_exec_origem, f'ans:{campo}')
-        if valor: ET.SubElement(pr, ans_tag(campo)).text = valor
-
-    # Profissionais do prestador fragmentado (identEquipe/identificacaoEquipe
-    # ou equipeSadt na guia original ➔ profissionais no modelo de honorários).
-    equipes = proc_exec_origem.findall('ans:identEquipe', NS) + proc_exec_origem.findall('ans:equipeSadt', NS)
-    for eq in equipes:
-        cod_prestador_eq = _texto_de(eq, './/ans:codProfissional/ans:codigoPrestadorNaOperadora')
-        if cod_prestador_eq is None or limpar_numero(cod_prestador_eq) != prestador_frag:
-            continue
-        origem_eq = eq.find('ans:identificacaoEquipe', NS) if tag_limpa(eq) == 'identEquipe' else eq
-        profissionais = ET.SubElement(pr, ans_tag('profissionais'))
-        mapa_campos = [
-            ('grauPart', 'grauParticipacao'), ('grauParticipacao', 'grauParticipacao'),
-        ]
-        grau = _texto_de(origem_eq, 'ans:grauPart') or _texto_de(origem_eq, 'ans:grauParticipacao')
-        if grau: ET.SubElement(profissionais, ans_tag('grauParticipacao')).text = grau
-        cod_prof = ET.SubElement(profissionais, ans_tag('codProfissional'))
-        ET.SubElement(cod_prof, ans_tag('codigoPrestadorNaOperadora')).text = limpar_numero(cod_prestador_eq)
-        nome_prof = _texto_de(origem_eq, 'ans:nomeProf') or _texto_de(origem_eq, 'ans:nomeProfissional')
-        if nome_prof: ET.SubElement(profissionais, ans_tag('nomeProfissional')).text = nome_prof
-        conselho = _texto_de(origem_eq, 'ans:conselho') or _texto_de(origem_eq, 'ans:conselhoProfissional')
-        if conselho: ET.SubElement(profissionais, ans_tag('conselhoProfissional')).text = conselho
-        num_conselho = _texto_de(origem_eq, 'ans:numeroConselhoProfissional')
-        if num_conselho: ET.SubElement(profissionais, ans_tag('numeroConselhoProfissional')).text = num_conselho
-        uf = _texto_de(origem_eq, 'ans:UF')
-        if uf: ET.SubElement(profissionais, ans_tag('UF')).text = uf
-        cbo = _texto_de(origem_eq, 'ans:CBOS') or _texto_de(origem_eq, 'ans:CBO') or _texto_de(origem_eq, 'ans:codigoCBOS') or _texto_de(origem_eq, 'ans:codigoCBO')
-        if cbo: ET.SubElement(profissionais, ans_tag('CBO')).text = cbo
-
-    try:
-        return float(_texto_de(proc_exec_origem, 'ans:valorTotal') or 0)
-    except ValueError:
-        return 0.0
-
-def _construir_guia_honorarios(guias_tiss_pai, guia_origem, prestador_frag, itens_guia, data_emissao):
-    """Monta uma guiaHonorarios (modelo do XML de referência do fragmento
-    220163) a partir de uma guiaResumoInternacao de origem e da lista de
-    procedimentos que a regra de fragmentação decidiu mover para ela."""
-    guia_hon = ET.SubElement(guias_tiss_pai, ans_tag('guiaHonorarios'))
-
-    cab_guia = ET.SubElement(guia_hon, ans_tag('cabecalhoGuia'))
-    registro_ans = _texto_de(guia_origem, './/ans:cabecalhoGuia/ans:registroANS')
-    if registro_ans: ET.SubElement(cab_guia, ans_tag('registroANS')).text = registro_ans
-    # Não há, na guia original, um "número de guia do prestador" próprio do
-    # 220163 (essa numeração pertence ao sistema de faturamento dele, ao qual
-    # esta aplicação não tem acesso). Reaproveitamos o número da guia
-    # original em vez de inventar uma sequência nova — ajuste manualmente se
-    # o prestador exigir sua própria numeração antes do envio.
-    numero_guia_prestador = _texto_de(guia_origem, './/ans:cabecalhoGuia/ans:numeroGuiaPrestador')
-    if numero_guia_prestador: ET.SubElement(cab_guia, ans_tag('numeroGuiaPrestador')).text = numero_guia_prestador
-
-    numero_solicitacao = _texto_de(guia_origem, './/ans:numeroGuiaSolicitacaoInternacao')
-    if numero_solicitacao: ET.SubElement(guia_hon, ans_tag('guiaSolicInternacao')).text = numero_solicitacao
-
-    senha = _texto_de(guia_origem, './/ans:dadosAutorizacao/ans:senha')
-    if senha: ET.SubElement(guia_hon, ans_tag('senha')).text = senha
-
-    numero_guia_operadora = _texto_de(guia_origem, './/ans:dadosAutorizacao/ans:numeroGuiaOperadora')
-    if numero_guia_operadora: ET.SubElement(guia_hon, ans_tag('numeroGuiaOperadora')).text = numero_guia_operadora
-
-    beneficiario = ET.SubElement(guia_hon, ans_tag('beneficiario'))
-    numero_carteira = _texto_de(guia_origem, './/ans:dadosBeneficiario/ans:numeroCarteira')
-    if numero_carteira: ET.SubElement(beneficiario, ans_tag('numeroCarteira')).text = numero_carteira
-    ET.SubElement(beneficiario, ans_tag('atendimentoRN')).text = _texto_de(guia_origem, './/ans:dadosBeneficiario/ans:atendimentoRN') or 'N'
-
-    cnes_original = _texto_de(guia_origem, './/ans:dadosExecutante/ans:CNES')
-    prestador_hospital = _texto_de(guia_origem, './/ans:dadosExecutante/ans:contratadoExecutante/ans:codigoPrestadorNaOperadora') or _CODIGO_HOSPITAL_UMC
-
-    local_contratado = ET.SubElement(guia_hon, ans_tag('localContratado'))
-    cod_contratado = ET.SubElement(local_contratado, ans_tag('codigoContratado'))
-    ET.SubElement(cod_contratado, ans_tag('codigoNaOperadora')).text = prestador_hospital
-    ET.SubElement(local_contratado, ans_tag('nomeContratado')).text = _NOME_HOSPITAL_UMC
-    if cnes_original: ET.SubElement(local_contratado, ans_tag('cnes')).text = cnes_original
-
-    contratado_exec = ET.SubElement(guia_hon, ans_tag('dadosContratadoExecutante'))
-    ET.SubElement(contratado_exec, ans_tag('codigonaOperadora')).text = prestador_frag
-    if cnes_original: ET.SubElement(contratado_exec, ans_tag('cnesContratadoExecutante')).text = cnes_original
-
-    dados_internacao = ET.SubElement(guia_hon, ans_tag('dadosInternacao'))
-    data_inicio = _texto_de(guia_origem, './/ans:dadosInternacao/ans:dataInicioFaturamento')
-    if data_inicio: ET.SubElement(dados_internacao, ans_tag('dataInicioFaturamento')).text = data_inicio
-    data_fim = _texto_de(guia_origem, './/ans:dadosInternacao/ans:dataFinalFaturamento')
-    if data_fim: ET.SubElement(dados_internacao, ans_tag('dataFimFaturamento')).text = data_fim
-
-    procs_realizados = ET.SubElement(guia_hon, ans_tag('procedimentosRealizados'))
-    valor_total_honorarios = sum(
-        _adicionar_procedimento_realizado(procs_realizados, item['proc_exec'], prestador_frag, i)
-        for i, item in enumerate(itens_guia, start=1)
-    )
-    ET.SubElement(guia_hon, ans_tag('valorTotalHonorarios')).text = f"{valor_total_honorarios:.2f}"
-
-    if data_emissao: ET.SubElement(guia_hon, ans_tag('dataEmissaoGuia')).text = data_emissao
-
-def construir_fragmento_honorarios(root_original, prestador_frag, itens):
-    """Monta um novo documento mensagemTISS (modelo de guiaHonorarios, igual
-    ao XML de referência do fragmento 220163) contendo uma guiaHonorarios
-    para cada guia de internação de origem que teve procedimento(s) movidos
-    para este prestador. Reaproveita os identificadores já existentes na
-    guia original (número de solicitação, senha, número da guia, CNES, lote
-    e cabeçalho da transação) em vez de inventar uma numeração própria.
-    Devolve (tree, root) prontos para passar por recalcular_hash_e_serializar
-    — a mesma função usada pelo restante da aplicação."""
-    cabecalho_original = root_original.find('.//ans:cabecalho', NS)
-    lote_original = root_original.find('.//ans:loteGuias/ans:numeroLote', NS)
-    data_emissao = _texto_de(cabecalho_original, './/ans:dataRegistroTransacao')
-    # Número de lote do fragmento: o MESMO número de lote do arquivo
-    # principal, só que com um 'T' na frente (ex.: lote 551961 do principal
-    # ➔ T551961 no fragmento) — identifica visualmente que aquele lote é um
-    # fragmento de honorários, e não inventa uma numeração nova.
-    numero_lote_original = lote_original.text if lote_original is not None and lote_original.text else ''
-    numero_lote_frag = f"T{numero_lote_original}" if numero_lote_original else ''
-
-    root_frag = ET.Element(ans_tag('mensagemTISS'), dict(root_original.attrib))
-    tree_frag = ET.ElementTree(root_frag)
-
-    cabecalho = ET.SubElement(root_frag, ans_tag('cabecalho'))
-    ident_transacao = ET.SubElement(cabecalho, ans_tag('identificacaoTransacao'))
-    for campo in ('tipoTransacao', 'sequencialTransacao', 'dataRegistroTransacao', 'horaRegistroTransacao'):
-        valor = _texto_de(cabecalho_original, f'.//ans:{campo}')
-        if valor: ET.SubElement(ident_transacao, ans_tag(campo)).text = valor
-
-    origem = ET.SubElement(cabecalho, ans_tag('origem'))
-    ident_prestador = ET.SubElement(origem, ans_tag('identificacaoPrestador'))
-    ET.SubElement(ident_prestador, ans_tag('codigoPrestadorNaOperadora')).text = prestador_frag
-
-    destino = ET.SubElement(cabecalho, ans_tag('destino'))
-    registro_ans_destino = _texto_de(cabecalho_original, './/ans:destino/ans:registroANS')
-    if registro_ans_destino: ET.SubElement(destino, ans_tag('registroANS')).text = registro_ans_destino
-
-    padrao = _texto_de(cabecalho_original, './/ans:Padrao')
-    if padrao: ET.SubElement(cabecalho, ans_tag('Padrao')).text = padrao
-
-    prestador_para_operadora = ET.SubElement(root_frag, ans_tag('prestadorParaOperadora'))
-    lote_guias = ET.SubElement(prestador_para_operadora, ans_tag('loteGuias'))
-    ET.SubElement(lote_guias, ans_tag('numeroLote')).text = numero_lote_frag
-    guias_tiss = ET.SubElement(lote_guias, ans_tag('guiasTISS'))
-
-    # Agrupa por guia de origem: uma guiaHonorarios por internação de origem,
-    # preservando o vínculo 1:1 mesmo que várias guias do mesmo arquivo
-    # tenham itens elegíveis para este prestador.
-    por_guia = {}
-    for item in itens:
-        grupo = por_guia.setdefault(id(item['guia']), {'guia': item['guia'], 'itens': []})
-        grupo['itens'].append(item)
-
-    for grupo in por_guia.values():
-        _construir_guia_honorarios(guias_tiss, grupo['guia'], prestador_frag, grupo['itens'], data_emissao)
-
-    epilogo = ET.SubElement(root_frag, ans_tag('epilogo'))
-    ET.SubElement(epilogo, ans_tag('hash'))
-
-    return tree_frag, root_frag, numero_lote_frag
-
 def processar_xml_tiss(arquivo_xml, dfs):
     auditoria = {
         'cbos': [], 'medicos_trocados': [], 'itens': [], 'anvisa': [], 'unidades': [], 'oxigenio': [],
         'conveniados_excluidos': [], 'procedimentos_ajustados': [], 'guias_blindadas': [], 'erros': [],
-        'valores_negativos': [], 'motivo_encerramento': [], 'horarios_duplicados': [], 'fragmentados': []
+        'valores_negativos': [], 'motivo_encerramento': [], 'horarios_duplicados': []
     }
     
     arquivo_xml.seek(0)
@@ -652,53 +424,7 @@ def processar_xml_tiss(arquivo_xml, dfs):
     set_conveniados = set(df_conveniados['Nome do Médico Conveniado'].dropna().astype(str).str.strip().str.upper()) if not df_conveniados.empty and 'Nome do Médico Conveniado' in df_conveniados.columns else set()
 
     df_blindagem = dfs.get('blindagem', pd.DataFrame()) if isinstance(dfs, dict) else pd.DataFrame()
-    tem_colunas_fragmentacao = not df_blindagem.empty and 'Tipo' in df_blindagem.columns and 'Código' in df_blindagem.columns
-
-    # Linhas de "proteção total" (comportamento já existente): guia inteira é
-    # ignorada quando o prestador aparece nela. São as linhas em que Tipo/
-    # Código estão vazios — inclusive linhas de planilhas antigas, que nunca
-    # tiveram essas duas colunas.
-    def _e_linha_de_protecao_total(linha):
-        if not tem_colunas_fragmentacao:
-            return True
-        tipo = str(linha.get('Tipo', '')).strip().upper()
-        return tipo not in ('PLANO', 'PROCEDIMENTO')
-
-    set_blindagem = set(
-        limpar_numero(r['Código Prestador Protegido'])
-        for _, r in df_blindagem.iterrows()
-        if pd.notna(r.get('Código Prestador Protegido')) and _e_linha_de_protecao_total(r)
-    ) if not df_blindagem.empty and 'Código Prestador Protegido' in df_blindagem.columns else set()
-
-    # 🆕 NOVA REGRA: contratos de fragmentação por prestador — linhas em que
-    # Tipo = PLANO ou PROCEDIMENTO, indicando planos/procedimentos contratados
-    # para aquele prestador (usado para decidir o que sai do arquivo principal
-    # e vai para um fragmento de honorários daquele prestador). Guardado como
-    # {codigo_prestador: {'planos': {...}, 'procedimentos': {...}}}.
-    dict_fragmentacao = {}
-    if tem_colunas_fragmentacao:
-        for _, r in df_blindagem.iterrows():
-            prestador_frag = limpar_numero(r.get('Código Prestador Protegido', ''))
-            tipo = str(r.get('Tipo', '')).strip().upper()
-            codigo_bruto = r.get('Código', '')
-            if not prestador_frag or tipo not in ('PLANO', 'PROCEDIMENTO') or pd.isna(codigo_bruto) or limpar_numero(codigo_bruto) == '':
-                continue
-            cfg = dict_fragmentacao.setdefault(prestador_frag, {'planos': set(), 'procedimentos': set()})
-            if tipo == 'PLANO':
-                # O prefixo de plano tem sempre 4 dígitos (mesmo tamanho usado
-                # por identificar_plano_pela_carteira). Se a célula "Código"
-                # não estiver formatada como texto no Sheets, "0014" chega
-                # aqui como o número 14 — sem repor os zeros à esquerda até 4
-                # dígitos, esse código nunca bateria com o prefixo real da
-                # carteirinha, e a fragmentação ficaria silenciosamente sem
-                # efeito (mesmo com a regra certinha na planilha).
-                codigo_plano = limpar_numero(codigo_bruto)
-                if codigo_plano.isdigit() and len(codigo_plano) < 4:
-                    codigo_plano = codigo_plano.zfill(4)
-                cfg['planos'].add(codigo_plano)
-            else:
-                cfg['procedimentos'].add(padronizar_codigo_8_digitos(codigo_bruto))
-    fragmentos_coletados = {}  # {codigo_prestador: [itens fragmentados desta execução]}
+    set_blindagem = set(df_blindagem['Código Prestador Protegido'].apply(limpar_numero).dropna()) if not df_blindagem.empty and 'Código Prestador Protegido' in df_blindagem.columns else set()
 
     df_itens = dfs.get('itens', pd.DataFrame()) if isinstance(dfs, dict) else pd.DataFrame()
     dict_itens = {padronizar_codigo_8_digitos(k): padronizar_codigo_8_digitos(v) for k, v in zip(df_itens['Código Incorreto'], df_itens['Código Correto']) if pd.notna(k)} if not df_itens.empty and 'Código Incorreto' in df_itens.columns else {}
@@ -729,7 +455,7 @@ def processar_xml_tiss(arquivo_xml, dfs):
             if tipo_guia == 'internacao':
                 carteira_elem = guia.find('.//ans:dadosBeneficiario/ans:numeroCarteira', NS)
                 numero_carteira = limpar_numero(carteira_elem.text) if carteira_elem is not None and carteira_elem.text else ""
-                eh_unimed_0014 = identificar_plano_pela_carteira(numero_carteira) == '0014'
+                eh_unimed_0014 = numero_carteira.startswith('0014')
 
             # --- SUBSTITUIÇÃO DE EQUIPE EM GUIAS SADT ---
             if tipo_guia == 'sadt':
@@ -958,63 +684,7 @@ def processar_xml_tiss(arquivo_xml, dfs):
                 # código + data + horário) para evitar a crítica "Serviço duplicado".
                 ajustar_horarios_duplicados(procs_container, auditoria)
 
-                # 🆕 NOVA REGRA: fragmentação de procedimentos por prestador.
-                # Regra lógica: fragmentar = prestador contratado (ex.: 220163)
-                # AND plano do beneficiário contratado para esse prestador AND
-                # procedimento contratado para esse prestador. Avaliada por
-                # procedimento — nunca fragmenta a guia inteira por causa de
-                # um único item elegível (ver PDF "regra_fragmentacao_prestador
-                # _220163", seção 6 e casos 1 a 5).
-                if tipo_guia == 'internacao' and dict_fragmentacao:
-                    plano_beneficiario = identificar_plano_pela_carteira(numero_carteira)
-                    for proc_exec in list(procs_container.findall('ans:procedimentoExecutado', NS)):
-                        equipes_proc = proc_exec.findall('ans:identEquipe', NS) + proc_exec.findall('ans:equipeSadt', NS)
-                        prestadores_do_proc = set()
-                        for eq in equipes_proc:
-                            cod_eq = eq.find('.//ans:codProfissional/ans:codigoPrestadorNaOperadora', NS)
-                            if cod_eq is not None and cod_eq.text:
-                                prestadores_do_proc.add(limpar_numero(cod_eq.text))
-
-                        for prestador_frag, cfg_frag in dict_fragmentacao.items():
-                            if prestador_frag not in prestadores_do_proc:
-                                continue  # Condição 1 (prestador): não é deste prestador
-                            if plano_beneficiario not in cfg_frag['planos']:
-                                continue  # Condição 2 (plano): plano não contratado para este prestador
-                            cod_proc_elem = proc_exec.find('.//ans:codigoProcedimento', NS)
-                            cod_proc_frag = padronizar_codigo_8_digitos(cod_proc_elem.text) if cod_proc_elem is not None and cod_proc_elem.text else ""
-                            if cod_proc_frag not in cfg_frag['procedimentos']:
-                                continue  # Condição 3 (procedimento): procedimento não contratado para este prestador
-
-                            # As 3 condições bateram simultaneamente: retira do
-                            # arquivo principal e leva para o fragmento deste
-                            # prestador (agrupado por guia de origem).
-                            fragmentos_coletados.setdefault(prestador_frag, []).append({
-                                'guia': guia, 'proc_exec': proc_exec, 'plano': plano_beneficiario, 'cod_proc': cod_proc_frag,
-                            })
-                            procs_container.remove(proc_exec)
-
-                            valor_elem_frag = proc_exec.find('ans:valorTotal', NS)
-                            try:
-                                valor_removido = float(valor_elem_frag.text) if valor_elem_frag is not None and valor_elem_frag.text else 0.0
-                            except ValueError:
-                                valor_removido = 0.0
-                            valor_total_guia = guia.find('.//ans:valorTotal', NS)
-                            if valor_total_guia is not None and valor_removido:
-                                for campo_valor in ('valorProcedimentos', 'valorTotalGeral'):
-                                    campo_elem = valor_total_guia.find(f'ans:{campo_valor}', NS)
-                                    if campo_elem is not None and campo_elem.text:
-                                        try:
-                                            campo_elem.text = f"{float(campo_elem.text) - valor_removido:.2f}"
-                                        except ValueError:
-                                            pass
-
-                            auditoria['fragmentados'].append(
-                                f"Procedimento {cod_proc_frag} (Plano {plano_beneficiario}) retirado do arquivo "
-                                f"principal e movido para o fragmento de honorários do prestador {prestador_frag}."
-                            )
-                            break  # um procedimento só pode ir para o fragmento de um único prestador
-
-
+            # --- OUTRAS DESPESAS ---
             despesas_container = guia.find('.//ans:outrasDespesas', NS)
             if despesas_container is not None:
                 for despesa in despesas_container.findall('ans:despesa', NS):
@@ -1073,20 +743,7 @@ def processar_xml_tiss(arquivo_xml, dfs):
     # nenhum detalhe de formatação/serialização do XML) ---
     xml_bytes = recalcular_hash_e_serializar(tree, root)
 
-    # 🆕 NOVA REGRA: gera um XML de honorários por prestador que recebeu ao
-    # menos um procedimento fragmentado (nunca gera fragmento vazio).
-    fragmentos = []
-    for prestador_frag, itens_frag in fragmentos_coletados.items():
-        if not itens_frag:
-            continue
-        tree_frag, root_frag, numero_lote_frag = construir_fragmento_honorarios(root, prestador_frag, itens_frag)
-        xml_frag_bytes = recalcular_hash_e_serializar(tree_frag, root_frag)
-        fragmentos.append({
-            'prestador': prestador_frag, 'xml_bytes': xml_frag_bytes, 'itens': itens_frag,
-            'numero_lote': numero_lote_frag,
-        })
-
-    return xml_bytes, auditoria, fragmentos
+    return xml_bytes, auditoria
 
 _PADRAO_TAG_LINHA = re.compile(r'<([\w:.-]+)>([^<]*)</\1>')
 
@@ -1155,8 +812,7 @@ TITULOS_AMIGAVEIS_AUDITORIA = {
     'erros': '⚠️ Avisos e Erros Durante o Processamento',
     'valores_negativos': '➖ Valores Negativos Corrigidos',
     'motivo_encerramento': '🚪 Motivo de Encerramento (11 ➔ 12)',
-    'horarios_duplicados': '⏰ Horários Escalonados (Anti-Duplicidade)',
-    'fragmentados': '📦 Procedimentos Fragmentados para Outro Prestador'
+    'horarios_duplicados': '⏰ Horários Escalonados (Anti-Duplicidade)'
 }
 
 
@@ -1172,50 +828,19 @@ ui.add_head_html("""
         --tiss-accent: #0f766e;
         --tiss-accent-suave: #ccfbf1;
         --tiss-borda: #e2e8f0;
-        --tiss-bg: #f4f7f6;
-        --tiss-bg-painel: #ffffff;
-        --tiss-texto: #374151;
-        --tiss-texto-forte: #1f2937;
-        --tiss-texto-suave: #4b5563;
-        --tiss-sombra: rgba(15, 23, 42, 0.06);
-        --tiss-sombra-hover: rgba(15, 23, 42, 0.08);
-        --tiss-diff-bg: #fffbeb;
-        --tiss-diff-borda: #d97706;
-        --tiss-diff-linha: #92400e;
     }
-    /* Tema escuro: aplicado quando o Quasar liga o dark mode (ver botão de
-       tema no topo da página, controlado por ui.dark_mode() no Python). */
-    body.body--dark {
-        --tiss-accent: #2dd4bf;
-        --tiss-accent-suave: #134e4a;
-        --tiss-borda: #334155;
-        --tiss-bg: #0f172a;
-        --tiss-bg-painel: #1e293b;
-        --tiss-texto: #cbd5e1;
-        --tiss-texto-forte: #f1f5f9;
-        --tiss-texto-suave: #94a3b8;
-        --tiss-sombra: rgba(0, 0, 0, 0.35);
-        --tiss-sombra-hover: rgba(0, 0, 0, 0.5);
-        --tiss-diff-bg: #3a2f0f;
-        --tiss-diff-borda: #d97706;
-        --tiss-diff-linha: #fbbf24;
-    }
-
-    body { background-color: var(--tiss-bg) !important; transition: background-color .15s ease; }
+    body { background-color: #f4f7f6 !important; }
 
     .q-card {
         border-radius: 10px !important;
-        background-color: var(--tiss-bg-painel) !important;
-        color: var(--tiss-texto-forte) !important;
-        transition: background-color .15s ease, color .15s ease;
     }
 
     .tiss-header, .tiss-toolbar, .tiss-statusbar, .tiss-panel {
-        background-color: var(--tiss-bg-painel);
+        background-color: #ffffff;
         border: 1px solid var(--tiss-borda);
         border-radius: 8px;
-        box-shadow: 0 1px 3px var(--tiss-sombra);
-        transition: box-shadow .15s ease, background-color .15s ease, border-color .15s ease;
+        box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+        transition: box-shadow .15s ease;
     }
     .tiss-header {
         padding: 8px 14px;
@@ -1229,35 +854,27 @@ ui.add_head_html("""
     .tiss-toolbar .q-btn:hover {
         background-color: var(--tiss-accent-suave);
     }
-    .tiss-statusbar { padding: 6px 14px; font-size: 12.5px; color: var(--tiss-texto); }
+    .tiss-statusbar { padding: 6px 14px; font-size: 12.5px; color: #374151; }
     .tiss-panel { padding: 10px; height: 74vh; overflow-y: auto; }
-    .tiss-panel:hover { box-shadow: 0 2px 6px var(--tiss-sombra-hover); }
+    .tiss-panel:hover { box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08); }
 
     .tiss-app-name { font-weight: 700; color: var(--tiss-accent); font-size: 15px; }
-    .tiss-file-name { font-weight: 600; color: var(--tiss-texto); margin-left: 10px; transition: color .15s ease; }
+    .tiss-file-name { font-weight: 600; color: #374151; margin-left: 10px; transition: color .15s ease; }
     .tiss-file-name.modificado { color: #b45309; }
 
     .diff-item {
-        border-left: 3px solid var(--tiss-diff-borda);
-        background-color: var(--tiss-diff-bg);
+        border-left: 3px solid #d97706;
+        background-color: #fffbeb;
         padding: 7px 9px;
         margin-bottom: 6px;
         border-radius: 5px;
         font-size: 12.5px;
-        transition: box-shadow .12s ease, background-color .15s ease;
+        transition: box-shadow .12s ease;
     }
-    .diff-item:hover { box-shadow: 0 1px 4px var(--tiss-sombra-hover); }
-    .diff-linha { color: var(--tiss-diff-linha); font-weight: 700; font-size: 11px; }
-    .diff-campo { color: var(--tiss-texto-forte); font-weight: 600; }
-    .diff-valores { color: var(--tiss-texto-suave); font-family: 'Consolas', monospace; font-size: 11.5px; }
-
-    /* Ajusta, no tema escuro, as classes de texto tipo Tailwind usadas em
-       vários pontos do app (avisos, status, rótulos secundários) para
-       manter contraste legível sobre fundo escuro. */
-    body.body--dark .text-gray-600, body.body--dark .text-gray-500 { color: #94a3b8 !important; }
-    body.body--dark .text-red-700 { color: #f87171 !important; }
-    body.body--dark .text-green-700 { color: #4ade80 !important; }
-    body.body--dark .text-amber-700 { color: #fbbf24 !important; }
+    .diff-item:hover { box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08); }
+    .diff-linha { color: #92400e; font-weight: 700; font-size: 11px; }
+    .diff-campo { color: #1f2937; font-weight: 600; }
+    .diff-valores { color: #4b5563; font-family: 'Consolas', monospace; font-size: 11.5px; }
 </style>
 <script>
     // Aviso nativo do navegador ao tentar fechar/recarregar a aba com
@@ -1300,31 +917,8 @@ def pagina_principal():
         'resultados_lote': [],
         'lote_id': 0,
         'arquivo_selecionado': None,  # nome do arquivo escolhido no seletor, para sobreviver a um refresh do painel
-        'tema_escuro': app.storage.user.get('tiss_tema_escuro', False),  # preferência de tema, lembrada por navegador
     }
     editores = {}  # chave: (lote_id, nome_arquivo) -> dict com o estado do editor daquele arquivo
-
-    # ==========================================
-    # TEMA CLARO / ESCURO — controla o dark mode nativo do Quasar (que
-    # dispara as regras "body.body--dark" do CSS acima) e troca o tema do
-    # editor CodeMirror de cada aba de XML já aberta. A escolha é lembrada
-    # por navegador (app.storage.user), então persiste entre visitas.
-    # ==========================================
-    modo_escuro = ui.dark_mode(value=estado['tema_escuro'])
-
-    def alternar_tema(e):
-        estado['tema_escuro'] = e.value
-        app.storage.user['tiss_tema_escuro'] = e.value
-        modo_escuro.set_value(e.value)
-        novo_tema_editor = 'basicDark' if e.value else 'basicLight'
-        for ed in editores.values():
-            if ed.get('ui_editor') is not None:
-                ed['ui_editor'].set_theme(novo_tema_editor)
-
-    with ui.row().classes('w-full items-center justify-end gap-2'):
-        ui.icon('light_mode').classes('text-sm')
-        ui.switch(value=estado['tema_escuro'], on_change=alternar_tema).props('color=primary dense').tooltip('Alternar entre tema claro e escuro')
-        ui.icon('dark_mode').classes('text-sm')
 
     with ui.column().classes('w-full max-w-none gap-2'):
         if avisos_sheets:
@@ -1360,42 +954,12 @@ def construir_aba_processamento(estado, editores):
             for i, (nome, conteudo) in enumerate(pendentes):
                 resultado = {'nome': nome, 'xml_bytes': None, 'auditoria': None, 'falha_total': None}
                 try:
-                    xml_resultado, auditoria, fragmentos = processar_xml_tiss(io.BytesIO(conteudo), estado['dfs'])
+                    xml_resultado, auditoria = processar_xml_tiss(io.BytesIO(conteudo), estado['dfs'])
                     resultado['xml_bytes'] = xml_resultado
                     resultado['auditoria'] = auditoria
-                    resultados.append(resultado)
-                    # 🆕 Cada fragmento de honorários gerado (ex.: prestador
-                    # 220163) vira um resultado independente, com nome próprio
-                    # — assim ele aparece no seletor de arquivos, pode ser
-                    # editado/validado como qualquer outro, e entra junto no
-                    # ZIP de "Baixar Todos", reaproveitando toda a infra já
-                    # existente em vez de criar um caminho especial para ele.
-                    for frag in fragmentos:
-                        prefixo_frag = NOMES_FRAGMENTO_POR_PRESTADOR.get(frag['prestador'], f"HONORARIOS_{frag['prestador']}")
-                        _, extensao_original = os.path.splitext(nome)
-                        nome_frag = f"{prefixo_frag}_{frag['numero_lote'] or frag['prestador']}{extensao_original or '.xml'}"
-                        auditoria_frag = {chave: [] for chave in auditoria}
-                        auditoria_frag['fragmentados'] = [
-                            f"Procedimento {item['cod_proc']} (Plano {item['plano']}) — origem: '{nome}'."
-                            for item in frag['itens']
-                        ]
-                        resultados.append({
-                            'nome': nome_frag, 'xml_bytes': frag['xml_bytes'],
-                            'auditoria': auditoria_frag, 'falha_total': None,
-                        })
-                    # 🆕 Vincula o principal a cada fragmento gerado a partir
-                    # dele (e vice-versa): assim, baixando qualquer um dos
-                    # arquivos do grupo pelo botão de download normal, os
-                    # outros do mesmo grupo saem juntos — sem precisar do
-                    # ZIP "Baixar Todos" só para pegar os dois de uma
-                    # fragmentação.
-                    if fragmentos:
-                        nomes_do_grupo = [nome] + [r['nome'] for r in resultados[-len(fragmentos):]]
-                        for r_grupo in resultados[-len(fragmentos) - 1:]:
-                            r_grupo['arquivos_relacionados'] = nomes_do_grupo
                 except Exception as e:
                     resultado['falha_total'] = str(e)
-                    resultados.append(resultado)
+                resultados.append(resultado)
                 barra.set_value((i + 1) / len(pendentes))
             # Junta os arquivos deste lote aos que já estavam na lista, em vez
             # de substituir tudo. Se um arquivo com o mesmo nome já tiver sido
@@ -1486,11 +1050,13 @@ def painel_resultados(estado, editores):
         resultado = next(r for r in sucesso if r['nome'] == nome_escolhido)
 
         aud = resultado.get('auditoria') or {}
-        with ui.row().classes('w-full mt-2 gap-x-6 gap-y-1 flex-wrap'):
-            for chave_aud, titulo_aud in TITULOS_AMIGAVEIS_AUDITORIA.items():
-                if chave_aud == 'erros':
-                    continue  # erros/avisos têm destaque próprio, logo abaixo
-                ui.label(f"{titulo_aud}: {len(aud.get(chave_aud, []))}").classes('text-sm')
+        with ui.row().classes('w-full mt-2 gap-6'):
+            ui.label(f"🔀 Médicos Trocados: {len(aud.get('medicos_trocados', []))}").classes('text-sm')
+            ui.label(f"👩‍⚕️ CBOs/Cods: {len(aud.get('cbos', []))}").classes('text-sm')
+            ui.label(f"➖ Valores Negativos: {len(aud.get('valores_negativos', []))}").classes('text-sm')
+            ui.label(f"🔄 Itens Traduzidos: {len(aud.get('itens', []))}").classes('text-sm')
+            ui.label(f"⏱️ Tempos O²: {len(aud.get('oxigenio', []))}").classes('text-sm')
+            ui.label(f"🛡️ Guia(s) Blindada(s): {len(aud.get('guias_blindadas', []))}").classes('text-sm')
         if aud.get('erros'):
             ui.label(f"⚠️ {len(aud['erros'])} aviso(s)/erro(s) pontual(is) durante o processamento.").classes('text-sm text-amber-700 mt-1')
 
@@ -1535,44 +1101,8 @@ def construir_editor_xml(estado, editores, resultado):
             'historico': [],
             'futuro': [],
             'erro_validacao': None,
-            'ui_editor': None,  # referência ao CodeMirror desta aba, preenchida abaixo (usada para trocar o tema claro/escuro depois de aberto)
         }
     ed = editores[chave]
-
-    # Sinaliza que a próxima mudança de valor do editor (CodeMirror) foi
-    # feita pelo próprio código (desfazer, refazer, salvar, recarregar,
-    # substituir), e não por digitação do usuário. Isso é necessário porque
-    # editor.set_value(...) dispara o mesmo evento on_value_change que uma
-    # tecla digitada dispararia — sem esse sinalizador, um "Desfazer" faria
-    # a lógica de checkpoint de undo (em ao_digitar) tratar o próprio
-    # desfazer como se fosse uma edição nova, empilhando de volta o estado
-    # que acabou de ser removido do histórico.
-    _evento_editor = {'ignorar_proximo': False}
-
-    def _repor_valor_editor(texto):
-        """Substitui todo o conteúdo do editor programaticamente. Limpamos
-        primeiro e só depois preenchemos com o texto final: o CodeMirror do
-        NiceGUI, ao receber um novo valor vindo do servidor, tenta aplicar
-        apenas a "região modificada" (para preservar a posição do cursor)
-        em vez de substituir o documento inteiro. Em edições grandes ou que
-        tocam várias partes do texto (como desfazer/refazer ou "Substituir
-        todos"), esse cálculo de patch parcial pode ocasionalmente
-        dessincronizar o texto realmente armazenado no editor do texto
-        exibido na tela. Forçar uma limpeza antes evita esse cálculo de
-        patch (é sempre tratado como "inserir tudo do zero"), eliminando o
-        risco de dessincronia.
-        """
-        _evento_editor['ignorar_proximo'] = True
-        editor.set_value('')
-        _evento_editor['ignorar_proximo'] = True
-        editor.set_value(texto)
-        # Qualquer reposição programática do conteúdo fecha a rajada de
-        # digitação em andamento (se houver), para que a próxima tecla
-        # digitada comece um novo checkpoint de desfazer a partir daqui —
-        # sem isso, um "Salvar" ou "Substituir todos" feito no meio de uma
-        # pausa de digitação poderia ficar "escondido" entre dois pontos do
-        # histórico de desfazer.
-        _debounce['em_rajada'] = False
 
     def definir_conteudo(novo_texto, empilhar_undo=True):
         if empilhar_undo:
@@ -1580,7 +1110,18 @@ def construir_editor_xml(estado, editores, resultado):
             ed['historico'][:] = ed['historico'][-50:]
             ed['futuro'].clear()
         ed['texto_atual'] = novo_texto
-        _repor_valor_editor(novo_texto)
+        # Reset completo do conteúdo do editor: limpamos primeiro e só depois
+        # preenchemos com o texto final. O CodeMirror do NiceGUI, ao receber
+        # um novo valor vindo do servidor, tenta aplicar apenas a "região
+        # modificada" (para preservar a posição do cursor) em vez de
+        # substituir o documento inteiro. Em edições grandes ou que tocam
+        # várias partes do texto (como "Substituir todos"), esse cálculo de
+        # patch parcial pode ocasionalmente dessincronizar o texto realmente
+        # armazenado no editor do texto exibido na tela. Forçar uma limpeza
+        # antes evita esse cálculo de patch (é sempre tratado como "inserir
+        # tudo do zero"), eliminando o risco de dessincronia.
+        editor.set_value('')
+        editor.set_value(novo_texto)
         atualizar_interface()
 
     with ui.column().classes('w-full gap-2 mt-2'):
@@ -1588,6 +1129,7 @@ def construir_editor_xml(estado, editores, resultado):
             with ui.row().classes('items-center gap-0'):
                 ui.label('📄 Validador TISS').classes('tiss-app-name')
                 label_arquivo = ui.label(nome_arquivo).classes('tiss-file-name')
+            botao_salvar_header = ui.button('Salvar', icon='save', color='primary')
 
         with ui.row().classes('w-full items-center tiss-toolbar gap-1'):
             botao_desfazer = ui.button(icon='undo').props('flat dense').tooltip('Desfazer')
@@ -1605,15 +1147,13 @@ def construir_editor_xml(estado, editores, resultado):
                             botao_sub_todos = ui.button('Substituir todos', color='primary').props('dense size=sm')
             botao_validar = ui.button(icon='check_circle').props('flat dense').tooltip('Validar XML')
             botao_recarregar = ui.button(icon='refresh').props('flat dense').tooltip('Recarregar (descarta alterações)')
-            botao_baixar = ui.button(icon='download').props('flat dense').tooltip('Validar, recalcular hash e baixar XML')
+            botao_baixar = ui.button(icon='download').props('flat dense').tooltip('Baixar XML')
             botao_copiar = ui.button(icon='content_copy').props('flat dense').tooltip('Copiar código-fonte')
 
         with ui.row().classes('w-full gap-2 no-wrap').style('height: 76vh'):
             with ui.column().classes('gap-0').style('flex: 4; height: 100%'):
-                tema_editor = 'basicDark' if estado.get('tema_escuro') else 'basicLight'
-                editor = ui.codemirror(value=ed['texto_atual'], language='XML', theme=tema_editor) \
+                editor = ui.codemirror(value=ed['texto_atual'], language='XML', theme='basicLight') \
                     .classes('w-full h-full border').style('font-size: 13px')
-                ed['ui_editor'] = editor
             with ui.column().classes('gap-0 tiss-panel').style('flex: 1; min-width: 260px'):
                 ui.label('ALTERAÇÕES').classes('font-bold text-sm mb-1')
                 painel_alteracoes = ui.column().classes('w-full gap-0')
@@ -1672,6 +1212,7 @@ def construir_editor_xml(estado, editores, resultado):
         label_arquivo.text = f"{nome_arquivo} *" if alterado else nome_arquivo
         label_arquivo.classes(replace='tiss-file-name modificado' if alterado else 'tiss-file-name')
 
+        botao_salvar_header.set_enabled(alterado)
         botao_desfazer.set_enabled(bool(ed['historico']))
         botao_refazer.set_enabled(bool(ed['futuro']))
 
@@ -1699,54 +1240,22 @@ def construir_editor_xml(estado, editores, resultado):
             atualizar_painel_diff(alterado)
 
     # ---------------- Eventos ----------------
-    _debounce = {'timer': None, 'em_rajada': False}
-
-    def _fim_da_rajada(alterado):
-        # Marca o fim da pausa de digitação: a próxima tecla começa uma nova
-        # rajada (e portanto um novo checkpoint de desfazer).
-        _debounce['em_rajada'] = False
-        atualizar_painel_diff(alterado)
+    _debounce = {'timer': None}
 
     def ao_digitar(e):
-        # Mudança de valor disparada pelo próprio código (desfazer, refazer,
-        # salvar, recarregar, substituir) — não é digitação do usuário e não
-        # deve mexer no histórico de desfazer nem reagendar o diff.
-        if _evento_editor['ignorar_proximo']:
-            _evento_editor['ignorar_proximo'] = False
-            return
-
-        if not _debounce['em_rajada']:
-            # Início de uma nova rajada de digitação: guarda o texto de
-            # ANTES dela como ponto de desfazer. Sem isso, digitar
-            # diretamente no editor nunca alimentava o histórico — só ações
-            # como "Substituir" ou "Recarregar" passavam por
-            # definir_conteudo(), então os botões Desfazer/Refazer ficavam
-            # sempre desabilitados (ou sem efeito) depois de uma edição
-            # comum de texto.
-            ed['historico'].append(ed['texto_atual'])
-            ed['historico'][:] = ed['historico'][-50:]
-            ed['futuro'].clear()
-            _debounce['em_rajada'] = True
-
         ed['texto_atual'] = e.value
         # Atualização leve (label, botões, validade, status) a cada tecla —
         # é barata. O recálculo do diff (caro) é adiado: se o usuário digitar
         # de novo antes de 0.5s passar, o cálculo pendente é cancelado e
         # reagendado, então só roda de fato quando a digitação faz uma pausa.
-        # É também essa mesma pausa que fecha a rajada atual do undo.
         alterado = ed['texto_atual'] != ed['texto_base']
         atualizar_interface(recalcular_diff=False)
         if _debounce['timer']:
             _debounce['timer'].deactivate()
-        _debounce['timer'] = ui.timer(0.5, lambda: _fim_da_rajada(alterado), once=True)
+        _debounce['timer'] = ui.timer(0.5, lambda: atualizar_painel_diff(alterado), once=True)
     editor.on_value_change(ao_digitar)
 
-    def baixar(_=None):
-        # Antes existiam dois botões (Salvar e Baixar) fazendo praticamente
-        # a mesma coisa. Agora "Baixar" sozinho: valida o texto atual do
-        # editor, recalcula o hash oficial da ANS e já dispara o download —
-        # funciona tanto para um arquivo sem edição manual (baixa o já
-        # corrigido automaticamente) quanto para um que foi editado à mão.
+    def salvar(_=None):
         novos_bytes, erro = validar_e_recalcular_xml_editado(ed['texto_atual'])
         if erro:
             ed['erro_validacao'] = erro
@@ -1758,38 +1267,22 @@ def construir_editor_xml(estado, editores, resultado):
         ed['hash_atual'] = _extrair_hash_do_texto(novo_texto_final)
         ed['salvo_alguma_vez'] = True
         resultado['xml_bytes'] = novos_bytes
-        # O Python roda no servidor, não na máquina de quem está usando o
-        # app — quem efetivamente coloca o arquivo no computador é sempre o
-        # download do navegador, disparado aqui.
+        # Além de validar e recalcular o hash, já dispara o download do
+        # arquivo final automaticamente. O "Salvar" nunca escreve nada no
+        # disco por conta própria (o Python roda no servidor, não na máquina
+        # de quem está usando o app) — quem efetivamente coloca o arquivo no
+        # computador é sempre o download do navegador. Antes, isso exigia
+        # dois cliques (Salvar, depois Baixar); agora sai em um só.
         ui.download.content(novos_bytes, f"PRONTO_{nome_arquivo}", media_type='application/xml')
-
-        # 🆕 Se este arquivo fez parte de uma fragmentação (é o principal ou
-        # é um dos fragmentos gerados a partir dele), baixa também os outros
-        # arquivos do mesmo grupo — assim um clique só no botão de download
-        # já traz tudo, sem precisar recorrer ao ZIP "Baixar Todos".
-        nomes_relacionados = [n for n in (resultado.get('arquivos_relacionados') or []) if n != nome_arquivo]
-        baixados_junto = []
-        for nome_rel in nomes_relacionados:
-            r_rel = next((r for r in estado['resultados_lote'] if r['nome'] == nome_rel and not r.get('falha_total')), None)
-            if r_rel and r_rel.get('xml_bytes'):
-                ui.download.content(r_rel['xml_bytes'], f"PRONTO_{r_rel['nome']}", media_type='application/xml')
-                baixados_junto.append(r_rel['nome'])
-
-        if baixados_junto:
-            ui.notify(
-                f"✅ Hash recalculado. Este arquivo foi fragmentado — baixado junto com: {', '.join(baixados_junto)}.",
-                type='positive', multi_line=True,
-            )
-        else:
-            ui.notify('✅ Hash recalculado e download iniciado.', type='positive')
-    botao_baixar.on('click', baixar)
+        ui.notify('✅ Alterações salvas, hash recalculado e download iniciado.', type='positive')
+    botao_salvar_header.on('click', salvar)
 
     def desfazer(_=None):
         if ed['historico']:
             ed['futuro'].append(ed['texto_atual'])
             anterior = ed['historico'].pop()
             ed['texto_atual'] = anterior
-            _repor_valor_editor(anterior)
+            editor.set_value(anterior)
             atualizar_interface()
     botao_desfazer.on('click', desfazer)
 
@@ -1798,7 +1291,7 @@ def construir_editor_xml(estado, editores, resultado):
             ed['historico'].append(ed['texto_atual'])
             proximo = ed['futuro'].pop()
             ed['texto_atual'] = proximo
-            _repor_valor_editor(proximo)
+            editor.set_value(proximo)
             atualizar_interface()
     botao_refazer.on('click', refazer)
 
@@ -1835,6 +1328,10 @@ def construir_editor_xml(estado, editores, resultado):
         except Exception as e:
             ui.notify(f'✕ XML inválido: {e}', type='negative')
     botao_validar.on('click', validar)
+
+    def baixar(_=None):
+        ui.download.content(resultado['xml_bytes'], f"PRONTO_{nome_arquivo}", media_type='application/xml')
+    botao_baixar.on('click', baixar)
 
     def copiar(_=None):
         ui.run_javascript(f"navigator.clipboard.writeText({ed['texto_atual']!r})")
@@ -1879,7 +1376,7 @@ def construir_editor_xml(estado, editores, resultado):
 
 
 ui.run(
-    title='Validador e Corretor XML Unimed',
+    title='Validador TISS',
     port=int(os.environ.get('PORT', 8080)),
     reload=False,
     show=False,  # não há navegador local para abrir num servidor publicado
