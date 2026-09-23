@@ -1258,6 +1258,44 @@ ui.add_head_html("""
     body.body--dark .text-red-700 { color: #f87171 !important; }
     body.body--dark .text-green-700 { color: #4ade80 !important; }
     body.body--dark .text-amber-700 { color: #fbbf24 !important; }
+
+    /* Abas de arquivo (substituem o antigo menu suspenso de seleção) */
+    .tiss-abas-arquivo {
+        background-color: var(--tiss-bg-painel);
+        border: 1px solid var(--tiss-borda);
+        border-radius: 8px;
+        padding: 2px 6px;
+    }
+
+    /* Barra de Localizar/Substituir ancorada sob o editor (oculta até o
+       botão de busca na toolbar ser clicado) */
+    .tiss-barra-localizar {
+        background-color: var(--tiss-accent-suave);
+        border: 1px solid var(--tiss-borda);
+        border-radius: 8px;
+        padding: 6px 10px;
+    }
+
+    /* Painel de Mensagens: validade do XML + resumo da correção automática,
+       sempre visível (em vez de só um toast que desaparece) */
+    .tiss-mensagens {
+        background-color: var(--tiss-bg-painel);
+        border: 1px solid var(--tiss-borda);
+        border-radius: 8px;
+        padding: 10px 14px;
+        box-shadow: 0 1px 3px var(--tiss-sombra);
+    }
+    .tiss-mensagens-titulo {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: .05em;
+        color: var(--tiss-texto-suave);
+    }
+    .tiss-mensagens-item { color: var(--tiss-texto); font-size: 12.5px; }
+    .tiss-msg-ok { color: #15803d; font-weight: 600; }
+    .tiss-msg-erro { color: #b91c1c; font-weight: 600; }
+    body.body--dark .tiss-msg-ok { color: #4ade80; }
+    body.body--dark .tiss-msg-erro { color: #f87171; }
 </style>
 <script>
     // Aviso nativo do navegador ao tentar fechar/recarregar a aba com
@@ -1454,7 +1492,7 @@ def painel_resultados(estado, editores):
         return
 
     with ui.card().classes('w-full mt-2'):
-        ui.label('📊 Resultado da Auditoria').classes('text-lg font-bold')
+        ui.label('📁 Arquivos Processados').classes('text-lg font-bold mb-1')
 
         sucesso = [r for r in resultados if not r.get('falha_total')]
         falhas = [r for r in resultados if r.get('falha_total')]
@@ -1469,6 +1507,7 @@ def painel_resultados(estado, editores):
 
         nomes = [r['nome'] for r in sucesso]
         valor_inicial = estado['arquivo_selecionado'] if estado['arquivo_selecionado'] in nomes else nomes[0]
+
         if len(sucesso) > 1:
             def baixar_zip():
                 buffer = io.BytesIO()
@@ -1476,30 +1515,26 @@ def painel_resultados(estado, editores):
                     for r in sucesso:
                         zf.writestr(f"PRONTO_{r['nome']}", r['xml_bytes'])
                 ui.download.content(buffer.getvalue(), 'XMLS_CORRIGIDOS.zip', media_type='application/zip')
-            ui.button('📦 Baixar Todos os XMLs Corrigidos (.ZIP)', on_click=baixar_zip, color='primary').classes('w-full')
-            seletor_arquivo = ui.select(nomes, value=valor_inicial, label='Arquivo selecionado').classes('w-full mt-2')
-        else:
-            seletor_arquivo = None
+            ui.button('📦 Baixar Todos os XMLs Corrigidos (.ZIP)', on_click=baixar_zip, color='primary').classes('w-full mb-2')
 
-        nome_escolhido = seletor_arquivo.value if seletor_arquivo else nomes[0]
+        # Faixa de abas — um arquivo aberto por aba, como num editor de
+        # desktop. Usamos o próprio nome do arquivo como identidade da aba
+        # (name=), o que a torna estável entre um refresh e outro deste
+        # painel (@ui.refreshable recria os elementos do zero a cada troca).
+        with ui.tabs().props('dense align=left inline-label active-color=primary indicator-color=primary') \
+                .classes('w-full tiss-abas-arquivo') as abas_arquivo:
+            for nome in nomes:
+                ui.tab(name=nome, label=nome, icon='description')
+        abas_arquivo.set_value(valor_inicial)
+
+        nome_escolhido = abas_arquivo.value
         estado['arquivo_selecionado'] = nome_escolhido
         resultado = next(r for r in sucesso if r['nome'] == nome_escolhido)
-
-        aud = resultado.get('auditoria') or {}
-        with ui.row().classes('w-full mt-2 gap-x-6 gap-y-1 flex-wrap'):
-            for chave_aud, titulo_aud in TITULOS_AMIGAVEIS_AUDITORIA.items():
-                if chave_aud == 'erros':
-                    continue  # erros/avisos têm destaque próprio, logo abaixo
-                ui.label(f"{titulo_aud}: {len(aud.get(chave_aud, []))}").classes('text-sm')
-        if aud.get('erros'):
-            ui.label(f"⚠️ {len(aud['erros'])} aviso(s)/erro(s) pontual(is) durante o processamento.").classes('text-sm text-amber-700 mt-1')
 
         def ao_trocar_arquivo(e):
             estado['arquivo_selecionado'] = e.value
             painel_resultados.refresh()
-
-        if seletor_arquivo:
-            seletor_arquivo.on_value_change(ao_trocar_arquivo)
+        abas_arquivo.on_value_change(ao_trocar_arquivo)
 
     construir_editor_xml(estado, editores, resultado)
 
@@ -1592,17 +1627,7 @@ def construir_editor_xml(estado, editores, resultado):
         with ui.row().classes('w-full items-center tiss-toolbar gap-1'):
             botao_desfazer = ui.button(icon='undo').props('flat dense').tooltip('Desfazer')
             botao_refazer = ui.button(icon='redo').props('flat dense').tooltip('Refazer')
-            with ui.button(icon='search').props('flat dense').tooltip('Localizar e substituir'):
-                with ui.menu() as menu_localizar:
-                    with ui.column().classes('p-3 gap-2').style('width: 320px'):
-                        ui.label('Localizar e Substituir').classes('font-bold')
-                        campo_localizar = ui.input('Localizar').classes('w-full')
-                        campo_substituir = ui.input('Substituir por').classes('w-full')
-                        resultado_busca = ui.label('').classes('text-xs text-gray-500')
-                        with ui.row().classes('gap-1 w-full'):
-                            botao_loc = ui.button('Localizar').props('flat dense size=sm')
-                            botao_sub_um = ui.button('Substituir').props('flat dense size=sm')
-                            botao_sub_todos = ui.button('Substituir todos', color='primary').props('dense size=sm')
+            botao_localizar_toggle = ui.button(icon='search').props('flat dense').tooltip('Localizar e substituir')
             botao_validar = ui.button(icon='check_circle').props('flat dense').tooltip('Validar XML')
             botao_recarregar = ui.button(icon='refresh').props('flat dense').tooltip('Recarregar (descarta alterações)')
             botao_baixar = ui.button(icon='download').props('flat dense').tooltip('Validar, recalcular hash e baixar XML')
@@ -1631,15 +1656,49 @@ def construir_editor_xml(estado, editores, resultado):
                 ui.label('ALTERAÇÕES').classes('font-bold text-sm mb-1')
                 painel_alteracoes = ui.column().classes('w-full gap-0')
 
+        with ui.row().classes('w-full items-center gap-2 no-wrap tiss-barra-localizar') as barra_localizar:
+            campo_localizar = ui.input('Localizar').classes('flex-grow').props('dense outlined')
+            campo_substituir = ui.input('Substituir por').classes('flex-grow').props('dense outlined')
+            resultado_busca = ui.label('').classes('text-xs text-gray-500 whitespace-nowrap')
+            botao_loc = ui.button(icon='search').props('flat dense round').tooltip('Contar ocorrências')
+            botao_sub_um = ui.button(icon='swap_horiz').props('flat dense round').tooltip('Substituir a primeira ocorrência')
+            botao_sub_todos = ui.button('Substituir todos').props('flat dense')
+            botao_fechar_localizar = ui.button(icon='close').props('flat dense round').tooltip('Fechar')
+        barra_localizar.visible = False
+
+        def alternar_barra_localizar(_=None):
+            barra_localizar.visible = not barra_localizar.visible
+            if barra_localizar.visible:
+                campo_localizar.run_method('focus')
+        botao_localizar_toggle.on('click', alternar_barra_localizar)
+        botao_fechar_localizar.on('click', lambda: setattr(barra_localizar, 'visible', False))
+
+        # ---------------- Painel de Mensagens ----------------
+        # Mostra, de forma sempre visível (em vez de só um toast que some), a
+        # validade atual do XML e um resumo do que a correção automática
+        # ajustou — no espírito do painel de mensagens de um validador de
+        # desktop, mas atualizado ao vivo conforme você edita.
+        with ui.column().classes('w-full gap-1 tiss-mensagens'):
+            ui.label('MENSAGENS').classes('tiss-mensagens-titulo')
+            mensagem_validade = ui.html()
+            aud = resultado.get('auditoria') or {}
+            resumo_itens = [(t, len(aud.get(c, []))) for c, t in TITULOS_AMIGAVEIS_AUDITORIA.items()
+                             if c != 'erros' and aud.get(c)]
+            if resumo_itens:
+                with ui.row().classes('gap-x-4 gap-y-1 flex-wrap mt-1'):
+                    for titulo_aud, qtd in resumo_itens:
+                        ui.label(f"{titulo_aud}: {qtd}").classes('text-xs tiss-mensagens-item')
+            if aud.get('erros'):
+                ui.label(f"⚠️ {len(aud['erros'])} aviso(s)/erro(s) pontual(is) durante o processamento.") \
+                    .classes('text-xs text-amber-700 mt-1')
+
         with ui.row().classes('w-full items-center tiss-statusbar gap-6'):
             status_arquivo = ui.label()
-            status_validade = ui.label()
             status_linhas = ui.label()
             status_alteracoes = ui.label()
             status_hash = ui.html()
 
         with ui.expansion('📝 Ver Detalhes das Modificações Automáticas').classes('w-full'):
-            aud = resultado.get('auditoria') or {}
             tem_alteracao = False
             for chave_aud, lista_logs in aud.items():
                 if lista_logs:
@@ -1690,11 +1749,9 @@ def construir_editor_xml(estado, editores, resultado):
 
         try:
             ET.fromstring(ed['texto_atual'].encode('ISO-8859-1'))
-            status_validade.text = '✓ XML válido'
-            status_validade.classes(replace='text-green-700 font-semibold')
-        except Exception:
-            status_validade.text = '✕ XML inválido'
-            status_validade.classes(replace='text-red-700 font-semibold')
+            mensagem_validade.content = '<span class="tiss-msg-ok">✔ Arquivo válido — nenhum erro de estrutura encontrado.</span>'
+        except Exception as e:
+            mensagem_validade.content = f'<span class="tiss-msg-erro">✕ XML inválido — {html.escape(str(e))}</span>'
 
         status_arquivo.text = html.escape(nome_arquivo)
         status_linhas.text = f"{len(ed['texto_atual'].splitlines())} linhas"
@@ -1885,7 +1942,6 @@ def construir_editor_xml(estado, editores, resultado):
         qtd = ed['texto_atual'].count(termo)
         definir_conteudo(ed['texto_atual'].replace(termo, novo))
         resultado_busca.text = f'{qtd} ocorrência(s) substituída(s).'
-        menu_localizar.close()
     botao_sub_todos.on('click', substituir_todos)
 
     atualizar_interface()
