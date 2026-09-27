@@ -30,6 +30,7 @@ import hashlib
 import zipfile
 import difflib
 import secrets
+import unicodedata
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 
@@ -202,6 +203,19 @@ def _conectar_planilha():
     except Exception as e:
         return None, str(e)
 
+def normalizar_nome_coluna(nome):
+    """Remove acentos, espaços nas pontas e diferenças de maiúscula/minúscula
+    de um nome de coluna, para comparar cabeçalhos da planilha de forma
+    tolerante a pequenas variações de digitação (ex.: 'Codigo' sem acento em
+    vez de 'Código', ou um espaço a mais no fim do cabeçalho). Sem isso, uma
+    coluna com o nome levemente diferente do esperado fazia a regra inteira
+    daquela aba parar de funcionar silenciosamente — sem nenhum erro, sem
+    nenhum aviso — porque o código simplesmente não achava a coluna e caía
+    no valor padrão vazio."""
+    sem_acento = unicodedata.normalize('NFKD', str(nome)).encode('ascii', 'ignore').decode('ascii')
+    return sem_acento.strip().lower()
+
+
 def carregar_tabelas_do_sheets():
     """Busca a versão mais recente de todas as tabelas de regras no Google
     Sheets. Se a conexão não estiver configurada ou falhar, devolve as
@@ -223,6 +237,34 @@ def carregar_tabelas_do_sheets():
                     for col in df.columns:
                         df.loc[:, col] = df[col].apply(limpar_numero)
                     df = formatar_tabela_padrao(df)
+
+                    # 🆕 Casa cada coluna esperada (definida em tabelas_padrao)
+                    # com a coluna da planilha que tiver o mesmo nome "no
+                    # fundo" (ignorando acento/maiúscula/espaço nas pontas),
+                    # renomeando para o nome exato que o resto do código
+                    # espera. Assim uma pequena diferença de digitação no
+                    # cabeçalho não quebra a regra inteira sem avisar
+                    # ninguém — e se mesmo assim faltar uma coluna, isso vira
+                    # um aviso claro em vez de silêncio.
+                    mapa_normalizado = {normalizar_nome_coluna(c): c for c in df.columns}
+                    renomear, faltando = {}, []
+                    for esperada in tabelas_padrao[aba].columns:
+                        chave = normalizar_nome_coluna(esperada)
+                        achada = mapa_normalizado.get(chave)
+                        if achada is None:
+                            faltando.append(esperada)
+                        elif achada != esperada:
+                            renomear[achada] = esperada
+                    if renomear:
+                        df = df.rename(columns=renomear)
+                    if faltando:
+                        avisos.append(
+                            f"Aba '{aba}': não encontrei a coluna {', '.join(repr(c) for c in faltando)} "
+                            f"(cabeçalhos encontrados na planilha: {', '.join(repr(c) for c in df.columns)}). "
+                            "Essa regra não vai funcionar até o cabeçalho da planilha bater com esse nome "
+                            "(acento, maiúscula/minúscula e espaço nas pontas não importam — mas o resto do "
+                            "texto precisa ser exatamente igual)."
+                        )
             except Exception as e:
                 avisos.append(f"Aba '{aba}': {e}")
         dfs[aba] = df
@@ -1334,6 +1376,7 @@ def pagina_principal():
     dfs_iniciais, avisos_sheets = carregar_tabelas_do_sheets()
     estado = {
         'dfs': dfs_iniciais,
+        'avisos_sheets': avisos_sheets,
         'arquivos_pendentes': [],   # [(nome, bytes), ...] aguardando processamento
         'resultados_lote': [],
         'lote_id': 0,
@@ -1359,16 +1402,47 @@ def pagina_principal():
             if ed.get('ui_editor') is not None:
                 ed['ui_editor'].set_theme(novo_tema_editor)
 
-    with ui.row().classes('w-full items-center justify-end gap-2'):
-        ui.icon('light_mode').classes('text-sm')
-        ui.switch(value=estado['tema_escuro'], on_change=alternar_tema).props('color=primary dense').tooltip('Alternar entre tema claro e escuro')
-        ui.icon('dark_mode').classes('text-sm')
+    # 🆕 RECARREGAR REGRAS DA PLANILHA — as tabelas (medicos, itens,
+    # procedimentos etc.) só eram lidas do Google Sheets UMA VEZ, quando a
+    # página é aberta. Se alguém edita uma regra na planilha enquanto a aba
+    # já está aberta, o processamento continuava usando a versão antiga até
+    # a página inteira ser recarregada (F5) — o que também descartaria
+    # qualquer lote já processado. Este botão busca as tabelas de novo sem
+    # precisar disso: os arquivos já processados continuam na tela.
+    def recarregar_regras():
+        novos_dfs, novos_avisos = carregar_tabelas_do_sheets()
+        estado['dfs'] = novos_dfs
+        estado['avisos_sheets'] = novos_avisos
+        painel_avisos_sheets.refresh()
+        if novos_avisos:
+            ui.notify(
+                f"🔄 Regras recarregadas com {len(novos_avisos)} aviso(s) — veja o painel abaixo. "
+                "Lotes já processados NÃO são reprocessados automaticamente.",
+                type='warning', multi_line=True,
+            )
+        else:
+            ui.notify(
+                "🔄 Regras recarregadas da planilha com sucesso. Lotes já processados NÃO são "
+                "reprocessados automaticamente — reenvie os arquivos se precisar aplicar a mudança.",
+                type='positive', multi_line=True,
+            )
+
+    with ui.row().classes('w-full items-center justify-between gap-2'):
+        ui.button('🔄 Recarregar regras da planilha', on_click=recarregar_regras, color='primary').props('flat dense')
+        with ui.row().classes('items-center gap-2'):
+            ui.icon('light_mode').classes('text-sm')
+            ui.switch(value=estado['tema_escuro'], on_change=alternar_tema).props('color=primary dense').tooltip('Alternar entre tema claro e escuro')
+            ui.icon('dark_mode').classes('text-sm')
+
+    @ui.refreshable
+    def painel_avisos_sheets():
+        if estado['avisos_sheets']:
+            with ui.expansion(f"⚠️ {len(estado['avisos_sheets'])} aviso(s) ao carregar as regras do Google Sheets", icon='warning').classes('w-full mb-2'):
+                for a in estado['avisos_sheets']:
+                    ui.label(f"• {a}").classes('text-sm text-amber-700')
 
     with ui.column().classes('w-full max-w-none gap-2'):
-        if avisos_sheets:
-            with ui.expansion('⚠️ Avisos ao carregar as regras do Google Sheets', icon='warning').classes('w-full mb-2'):
-                for a in avisos_sheets:
-                    ui.label(f"• {a}").classes('text-sm text-amber-700')
+        painel_avisos_sheets()
         construir_aba_processamento(estado, editores)
 
 
