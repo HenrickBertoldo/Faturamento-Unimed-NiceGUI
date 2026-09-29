@@ -328,10 +328,10 @@ def corrigir_motivo_encerramento(root, auditoria):
     for elem in root.iter():
          tag_nome = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
         if tag_nome == 'motivoEncerramento' and elem.text:
-            if elem.text.strip() == ('11', '15'):
+            if elem.text.strip() = '11':
                 valor_anterior = elem.text.strip()
                 elem.text = '12'
-                logs.append(f"Tag <motivoEncerramento>: {valor_anterior} ➔ 12")
+                logs.append("Tag <motivoEncerramento>: 11 ➔ 12")
     
     if 'motivo_encerramento' not in auditoria:
         auditoria['motivo_encerramento'] = []
