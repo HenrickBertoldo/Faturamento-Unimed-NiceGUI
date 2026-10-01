@@ -1132,6 +1132,33 @@ def processar_xml_tiss(arquivo_xml, dfs):
 
 _PADRAO_TAG_LINHA = re.compile(r'<([\w:.-]+)>([^<]*)</\1>')
 
+# ==========================================================================
+# 🆕 CAMPOS DO TOPO (Senha / Número da Carteira) — camada de INTERFACE only:
+# lê e edita o texto do XML por regex, sem envolver xml.etree nem nenhuma
+# regra de negócio. Usados só para sincronizar os dois campos de atalho com
+# o editor; toda correção automática continua vindo exclusivamente de
+# processar_xml_tiss, intocado por esta camada.
+# ==========================================================================
+_PADRAO_SENHA = re.compile(r'<ans:senha>([^<]*)</ans:senha>')
+_PADRAO_CARTEIRA = re.compile(r'<ans:numeroCarteira>([^<]*)</ans:numeroCarteira>')
+
+def _extrair_primeiro(padrao, texto):
+    """Devolve o conteúdo do primeiro elemento que casar com o padrão, ou
+    None se ele não existir no texto (arquivo sem esse campo, ex.: uma guia
+    sem autorização prévia)."""
+    m = padrao.search(texto)
+    return m.group(1) if m else None
+
+def _substituir_primeiro(padrao, texto, novo_valor):
+    """Troca o conteúdo do PRIMEIRO elemento que casar com o padrão pelo
+    novo valor, preservando o resto do texto byte a byte. Se o elemento não
+    existir no texto, devolve o texto inalterado (nada para editar)."""
+    m = padrao.search(texto)
+    if not m:
+        return texto
+    inicio, fim = m.span(1)
+    return texto[:inicio] + novo_valor + texto[fim:]
+
 def calcular_diff_alteracoes(texto_base, texto_atual):
     """Gera uma lista aproximada de alterações (linha, campo, valor antigo,
     valor novo) comparando o texto linha a linha com difflib. Funciona bem
@@ -1263,6 +1290,15 @@ ui.add_head_html("""
         padding: 8px 14px;
         border-left: 4px solid var(--tiss-accent);
     }
+    .tiss-campo-topo-label {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--tiss-texto-suave);
+        text-transform: uppercase;
+        letter-spacing: .02em;
+    }
+    .tiss-campo-topo-input { width: 200px; }
+    .tiss-campo-topo-input input { font-family: 'Consolas', monospace; font-size: 13px; }
     .tiss-toolbar { padding: 4px 8px; }
     .tiss-toolbar .q-btn {
         border-radius: 6px;
@@ -1451,20 +1487,25 @@ def pagina_principal():
 # ==========================================================================
 def construir_aba_processamento(estado, editores):
 
+    # 🆕 PROCESSAMENTO AUTOMÁTICO: assim que o(s) arquivo(s) termina(m) de
+    # subir, a correção já roda sozinha — sem precisar de um botão
+    # "Iniciar Correção" separado. on_multi_upload dispara UMA vez com todos
+    # os arquivos de um mesmo gesto de seleção (clique único ou arrastar
+    # vários de uma vez), o que preserva o comportamento de lote existente.
     async def ao_receber_upload(e):
-        conteudo = await e.file.read()
-        estado['arquivos_pendentes'].append((e.file.name, conteudo))
-        label_pendentes.text = f"📁 {len(estado['arquivos_pendentes'])} arquivo(s) selecionado(s)."
+        for arquivo in e.files:
+            conteudo = await arquivo.read()
+            estado['arquivos_pendentes'].append((arquivo.name, conteudo))
+        await iniciar_correcao()
 
     with ui.card().classes('w-full'):
-        ui.label('📜 Processamento de XMLs em Lote').classes('text-lg font-bold')
-        ui.label('Arraste um ou vários arquivos XML gerados pelo seu sistema.').classes('text-sm text-gray-600')
-        ui.upload(on_upload=ao_receber_upload, multiple=True, auto_upload=True).props('accept=.xml').classes('w-full')
-        label_pendentes = ui.label('Nenhum arquivo selecionado ainda.').classes('text-sm text-gray-600')
+        ui.label('📜 Processamento de XMLs').classes('text-lg font-bold')
+        ui.label('Selecione um ou vários arquivos XML — a correção roda automaticamente assim que o(s) '
+                  'arquivo(s) terminar(em) de subir.').classes('text-sm text-gray-600')
+        ui.upload(on_multi_upload=ao_receber_upload, multiple=True, auto_upload=True).props('accept=.xml').classes('w-full')
 
         async def iniciar_correcao():
             if not estado['arquivos_pendentes']:
-                ui.notify('Selecione ao menos um arquivo XML antes de continuar.', type='warning')
                 return
             barra.visible = True
             resultados = []
@@ -1520,7 +1561,12 @@ def construir_aba_processamento(estado, editores):
             estado['resultados_lote'] = list(existentes_por_nome.values())
             estado['lote_id'] += 1
             estado['arquivos_pendentes'] = []
-            label_pendentes.text = 'Nenhum arquivo selecionado ainda.'
+            # Seleciona automaticamente o primeiro arquivo recém-processado
+            # deste lote, para ele já aparecer no editor sem precisar de mais
+            # um clique — mantém a etapa "selecionar arquivo" como o único
+            # passo manual do fluxo.
+            if resultados:
+                estado['arquivo_selecionado'] = resultados[0]['nome']
             barra.visible = False
             painel_resultados.refresh()
 
@@ -1550,8 +1596,7 @@ def construir_aba_processamento(estado, editores):
                     ui.button('Limpar mesmo assim', color='negative', on_click=confirmar_limpeza)
             dialogo_limpar.open()
 
-        with ui.row().classes('w-full mt-2 gap-2 no-wrap'):
-            ui.button('🚀 Iniciar Correção Automática', on_click=iniciar_correcao, color='primary').classes('flex-grow')
+        with ui.row().classes('w-full mt-2 gap-2 no-wrap justify-end'):
             ui.button('🧹 Limpar Lista', on_click=limpar_lista_processados).props('flat')
         barra = ui.linear_progress(value=0).classes('w-full mt-1')
         barra.visible = False
@@ -1692,11 +1737,54 @@ def construir_editor_xml(estado, editores, resultado):
         _repor_valor_editor(novo_texto)
         atualizar_interface()
 
+    # 🆕 CAMPOS DO TOPO (Senha / Número da Carteira) — sincronizados nos dois
+    # sentidos com o XML do editor, por regex (ver _PADRAO_SENHA/_PADRAO_
+    # CARTEIRA e _extrair_primeiro/_substituir_primeiro perto do topo do
+    # arquivo). Camada de interface pura: não chama processar_xml_tiss nem
+    # nenhuma outra regra de negócio, só lê/edita texto já corrigido.
+    _campos_topo = {'ignorar_proximo_senha': False, 'ignorar_proximo_carteira': False}
+
+    def _copiar_campo(valor):
+        ui.run_javascript(f"navigator.clipboard.writeText({json.dumps(valor or '')})")
+        ui.notify('Copiado.', type='positive')
+
+    def ao_editar_campo_topo(padrao, ignorar_chave, novo_valor):
+        if _campos_topo[ignorar_chave]:
+            # Esta mudança veio da própria sincronização XML → campo (abaixo),
+            # não foi o usuário digitando no campo — não reescreve o XML.
+            _campos_topo[ignorar_chave] = False
+            return
+        if _extrair_primeiro(padrao, ed['texto_atual']) is None:
+            ui.notify('Este arquivo não tem essa tag — nada para atualizar.', type='warning')
+            return
+        novo_texto = _substituir_primeiro(padrao, ed['texto_atual'], novo_valor)
+        if novo_texto != ed['texto_atual']:
+            definir_conteudo(novo_texto)
+
     with ui.column().classes('w-full gap-2 mt-2'):
-        with ui.row().classes('w-full items-center justify-between tiss-header'):
+        with ui.row().classes('w-full items-center justify-between tiss-header no-wrap'):
             with ui.row().classes('items-center gap-0'):
                 ui.label('📄 Validador TISS').classes('tiss-app-name')
                 label_arquivo = ui.label(nome_arquivo).classes('tiss-file-name')
+            with ui.row().classes('items-center gap-3 tiss-campos-topo'):
+                with ui.column().classes('gap-0'):
+                    ui.label('Senha').classes('tiss-campo-topo-label')
+                    with ui.row().classes('items-center gap-1 no-wrap'):
+                        campo_senha = ui.input(value=_extrair_primeiro(_PADRAO_SENHA, ed['texto_atual']) or '') \
+                            .props('dense outlined').classes('tiss-campo-topo-input')
+                        ui.button(icon='content_copy').props('flat dense round size=sm') \
+                            .tooltip('Copiar').on('click', lambda: _copiar_campo(campo_senha.value))
+                with ui.column().classes('gap-0'):
+                    ui.label('Número da Carteira').classes('tiss-campo-topo-label')
+                    with ui.row().classes('items-center gap-1 no-wrap'):
+                        campo_carteira = ui.input(value=_extrair_primeiro(_PADRAO_CARTEIRA, ed['texto_atual']) or '') \
+                            .props('dense outlined').classes('tiss-campo-topo-input')
+                        ui.button(icon='content_copy').props('flat dense round size=sm') \
+                            .tooltip('Copiar').on('click', lambda: _copiar_campo(campo_carteira.value))
+        campo_senha.props('debounce=500')
+        campo_carteira.props('debounce=500')
+        campo_senha.on_value_change(lambda e: ao_editar_campo_topo(_PADRAO_SENHA, 'ignorar_proximo_senha', e.value))
+        campo_carteira.on_value_change(lambda e: ao_editar_campo_topo(_PADRAO_CARTEIRA, 'ignorar_proximo_carteira', e.value))
 
         with ui.row().classes('w-full items-center tiss-toolbar gap-1'):
             botao_desfazer = ui.button(icon='undo').props('flat dense').tooltip('Desfazer')
@@ -1707,28 +1795,31 @@ def construir_editor_xml(estado, editores, resultado):
             botao_baixar = ui.button(icon='download').props('flat dense').tooltip('Validar, recalcular hash e baixar XML')
             botao_copiar = ui.button(icon='content_copy').props('flat dense').tooltip('Copiar código-fonte')
 
-        with ui.row().classes('w-full gap-2 no-wrap').style('height: 76vh'):
-            with ui.column().classes('gap-0').style('flex: 4; height: 100%'):
-                tema_editor = 'basicDark' if estado.get('tema_escuro') else 'basicLight'
-                editor = ui.codemirror(value=ed['texto_atual'], language='XML', theme=tema_editor) \
-                    .classes('w-full h-full border').style('font-size: 13px')
-                ed['ui_editor'] = editor
-                # O CodeMirror mede a posição de cada linha na tela no momento em
-                # que é criado. Se, nesse instante, o layout da página ainda não
-                # tiver terminado de assentar (flex ainda recalculando largura,
-                # fonte monoespaçada ainda carregando, etc.), essa primeira
-                # medição fica levemente errada — e só se corrige na prática
-                # depois de qualquer evento que force o navegador a remedir
-                # (por isso o PRIMEIRO clique após abrir o arquivo podia cair
-                # num lugar diferente do que a gente clicou, mas os seguintes já
-                # funcionavam certinho). Disparar um evento de "resize" da
-                # janela pouco depois de montar não muda nada visualmente, mas
-                # faz o CodeMirror recalcular essa geometria já com o layout
-                # definitivo, sem precisar de nenhum redimensionamento real.
-                ui.timer(0.4, lambda: ui.run_javascript("window.dispatchEvent(new Event('resize'));"), once=True)
-            with ui.column().classes('gap-0 tiss-panel').style('flex: 1; min-width: 260px'):
-                ui.label('ALTERAÇÕES').classes('font-bold text-sm mb-1')
-                painel_alteracoes = ui.column().classes('w-full gap-0')
+        # O editor agora ocupa a largura inteira — é o elemento principal da
+        # tela. O painel de alterações manuais pendentes (antes ao lado)
+        # virou uma faixa retrátil logo abaixo, que só se abre sozinha
+        # quando existe uma edição pendente para mostrar.
+        tema_editor = 'basicDark' if estado.get('tema_escuro') else 'basicLight'
+        editor = ui.codemirror(value=ed['texto_atual'], language='XML', theme=tema_editor) \
+            .classes('w-full border').style('height: 62vh; font-size: 13px')
+        ed['ui_editor'] = editor
+        # O CodeMirror mede a posição de cada linha na tela no momento em
+        # que é criado. Se, nesse instante, o layout da página ainda não
+        # tiver terminado de assentar (flex ainda recalculando largura,
+        # fonte monoespaçada ainda carregando, etc.), essa primeira
+        # medição fica levemente errada — e só se corrige na prática
+        # depois de qualquer evento que force o navegador a remedir
+        # (por isso o PRIMEIRO clique após abrir o arquivo podia cair
+        # num lugar diferente do que a gente clicou, mas os seguintes já
+        # funcionavam certinho). Disparar um evento de "resize" da
+        # janela pouco depois de montar não muda nada visualmente, mas
+        # faz o CodeMirror recalcular essa geometria já com o layout
+        # definitivo, sem precisar de nenhum redimensionamento real.
+        ui.timer(0.4, lambda: ui.run_javascript("window.dispatchEvent(new Event('resize'));"), once=True)
+
+        with ui.expansion('Alterações manuais pendentes', icon='edit_note').classes('w-full') as expansao_alteracoes:
+            painel_alteracoes = ui.column().classes('w-full gap-0')
+
 
         with ui.row().classes('w-full items-center gap-2 no-wrap tiss-barra-localizar') as barra_localizar:
             campo_localizar = ui.input('Localizar').classes('flex-grow').props('dense outlined')
@@ -1748,23 +1839,71 @@ def construir_editor_xml(estado, editores, resultado):
         botao_fechar_localizar.on('click', lambda: setattr(barra_localizar, 'visible', False))
 
         # ---------------- Painel de Mensagens ----------------
-        # Mostra, de forma sempre visível (em vez de só um toast que some), a
-        # validade atual do XML e um resumo do que a correção automática
-        # ajustou — no espírito do painel de mensagens de um validador de
-        # desktop, mas atualizado ao vivo conforme você edita.
+        # Estilo checklist (como um validador de desktop): primeiro o que
+        # aconteceu ao carregar o arquivo, depois cada correção realmente
+        # aplicada (reaproveitando os mesmos textos que processar_xml_tiss
+        # já gera — nenhuma regra nova aqui, só a apresentação), e por fim
+        # um resumo do estado final. Sempre visível (não é um toast que
+        # some sozinho) e atualizado ao vivo conforme o XML é editado.
+        aud = resultado.get('auditoria') or {}
+        categorias_com_alteracao = [(c, t, aud.get(c)) for c, t in TITULOS_AMIGAVEIS_AUDITORIA.items()
+                                     if c != 'erros' and aud.get(c)]
+        total_correcoes = sum(len(itens) for _, _, itens in categorias_com_alteracao)
+        senha_encontrada = _extrair_primeiro(_PADRAO_SENHA, ed['texto_original'])
+        carteira_encontrada = _extrair_primeiro(_PADRAO_CARTEIRA, ed['texto_original'])
+
         with ui.column().classes('w-full gap-1 tiss-mensagens'):
             ui.label('MENSAGENS').classes('tiss-mensagens-titulo')
             mensagem_validade = ui.html()
-            aud = resultado.get('auditoria') or {}
-            resumo_itens = [(t, len(aud.get(c, []))) for c, t in TITULOS_AMIGAVEIS_AUDITORIA.items()
-                             if c != 'erros' and aud.get(c)]
-            if resumo_itens:
-                with ui.row().classes('gap-x-4 gap-y-1 flex-wrap mt-1'):
-                    for titulo_aud, qtd in resumo_itens:
-                        ui.label(f"{titulo_aud}: {qtd}").classes('text-xs tiss-mensagens-item')
+
+            with ui.row().classes('items-center gap-2'):
+                ui.icon('check_circle', color='positive').classes('text-base')
+                ui.label(f'Arquivo carregado com sucesso: {nome_arquivo}').classes('text-sm')
+            with ui.row().classes('items-center gap-2'):
+                ui.icon('check_circle', color='positive').classes('text-base')
+                ui.label('Processamento automático concluído.').classes('text-sm')
+
+            if total_correcoes:
+                ui.label(f'Correções realizadas ({total_correcoes})').classes('font-bold text-sm mt-2')
+                for chave_cat, titulo_cat, itens_cat in categorias_com_alteracao:
+                    with ui.row().classes('items-center gap-2'):
+                        ui.icon('check_circle', color='positive').classes('text-base')
+                        ui.label(titulo_cat).classes('text-sm font-semibold')
+                        ui.label(f'{len(itens_cat)} item(ns)').classes('text-xs text-gray-500')
+                    with ui.column().classes('gap-0 ml-7'):
+                        for item in itens_cat:
+                            ui.label(f'• {item}').classes('text-xs text-gray-600')
+            else:
+                with ui.row().classes('items-center gap-2 mt-1'):
+                    ui.icon('check_circle', color='positive').classes('text-base')
+                    ui.label('Nenhuma correção necessária.').classes('text-sm')
+
+            if senha_encontrada is not None or carteira_encontrada is not None:
+                ui.label('Informações identificadas').classes('font-bold text-sm mt-2')
+                if senha_encontrada is not None:
+                    with ui.row().classes('items-center gap-2'):
+                        ui.icon('info', color='primary').classes('text-base')
+                        ui.label('Tag <ans:senha> identificada').classes('text-sm')
+                        ui.label(f'Valor: {senha_encontrada}').classes('text-xs text-gray-500')
+                if carteira_encontrada is not None:
+                    with ui.row().classes('items-center gap-2'):
+                        ui.icon('info', color='primary').classes('text-base')
+                        ui.label('Tag <ans:numeroCarteira> identificada').classes('text-sm')
+                        ui.label(f'Valor: {carteira_encontrada}').classes('text-xs text-gray-500')
+
             if aud.get('erros'):
-                ui.label(f"⚠️ {len(aud['erros'])} aviso(s)/erro(s) pontual(is) durante o processamento.") \
-                    .classes('text-xs text-amber-700 mt-1')
+                ui.label(f"⚠️ {len(aud['erros'])} aviso(s)/erro(s) pontual(is) durante o processamento").classes('text-sm font-semibold text-amber-700 mt-2')
+                with ui.column().classes('gap-0 ml-7'):
+                    for item in aud['erros']:
+                        ui.label(f'• {item}').classes('text-xs text-amber-700')
+
+            with ui.row().classes('items-center gap-2 mt-2'):
+                if aud.get('erros'):
+                    ui.icon('warning', color='warning').classes('text-base')
+                    ui.label('Processamento concluído com avisos — confira os itens acima.').classes('text-sm font-semibold')
+                else:
+                    ui.icon('check_circle', color='positive').classes('text-base')
+                    ui.label('Processamento concluído com sucesso.').classes('text-sm font-semibold')
 
         with ui.row().classes('w-full items-center tiss-statusbar gap-6'):
             status_arquivo = ui.label()
@@ -1772,16 +1911,6 @@ def construir_editor_xml(estado, editores, resultado):
             status_alteracoes = ui.label()
             status_hash = ui.html()
 
-        with ui.expansion('📝 Ver Detalhes das Modificações Automáticas').classes('w-full'):
-            tem_alteracao = False
-            for chave_aud, lista_logs in aud.items():
-                if lista_logs:
-                    tem_alteracao = True
-                    ui.label(TITULOS_AMIGAVEIS_AUDITORIA.get(chave_aud, chave_aud)).classes('font-bold text-sm mt-1')
-                    for item in lista_logs:
-                        ui.label(f"• {item}").classes('text-xs text-gray-600')
-            if not tem_alteracao:
-                ui.label('Nenhuma alteração foi necessária neste XML.').classes('text-sm text-gray-500')
 
     # ---------------- Atualização da interface ----------------
     def atualizar_painel_diff(alterado):
@@ -1812,6 +1941,25 @@ def construir_editor_xml(estado, editores, resultado):
         status_alteracoes.text = (f"⚠ {len(alteracoes)} alteração(ões) não salva(s)" if alterado
                                    else ("💾 Alterações salvas" if ed['salvo_alguma_vez'] else "Sem alterações"))
         status_alteracoes.classes(replace='text-amber-700 font-semibold' if alterado else 'text-gray-600')
+        # A faixa "Alterações manuais pendentes" só se abre sozinha quando há
+        # de fato algo para mostrar — assim ela não ocupa espaço à toa logo
+        # depois de abrir um arquivo (quando ainda não há nenhuma edição).
+        expansao_alteracoes.value = bool(alteracoes)
+
+    def _sincronizar_campos_topo():
+        """Lê senha/carteira do texto ATUAL do editor e reflete nos campos do
+        topo, se forem diferentes do que já está exibido — sentido XML →
+        campo. O sentido campo → XML é feito em ao_editar_campo_topo. Usa o
+        mesmo sinalizador 'ignorar_proximo_*' do topo do arquivo para não
+        reescrever o XML de volta ao simplesmente espelhar o valor no campo."""
+        senha_atual = _extrair_primeiro(_PADRAO_SENHA, ed['texto_atual'])
+        if senha_atual is not None and senha_atual != campo_senha.value:
+            _campos_topo['ignorar_proximo_senha'] = True
+            campo_senha.set_value(senha_atual)
+        carteira_atual = _extrair_primeiro(_PADRAO_CARTEIRA, ed['texto_atual'])
+        if carteira_atual is not None and carteira_atual != campo_carteira.value:
+            _campos_topo['ignorar_proximo_carteira'] = True
+            campo_carteira.set_value(carteira_atual)
 
     def atualizar_interface(recalcular_diff=True):
         alterado = ed['texto_atual'] != ed['texto_base']
@@ -1834,6 +1982,8 @@ def construir_editor_xml(estado, editores, resultado):
         cor = 'color:#b45309;font-weight:600' if hash_dif else 'color:#374151'
         status_hash.content = (f"Hash original: <code>{ed['hash_original'] or '—'}</code> &nbsp;|&nbsp; "
                                 f"<span style='{cor}'>Hash atual: <code>{ed['hash_atual'] or '—'}</code></span>")
+
+        _sincronizar_campos_topo()
 
         # Liga/desliga o aviso nativo do navegador de "sair sem salvar"
         # (registrado uma vez no <head> da página; aqui só atualizamos a flag).
@@ -2021,15 +2171,21 @@ def construir_editor_xml(estado, editores, resultado):
     atualizar_interface()
 
 
-ui.run(
-    title='Validador e Corretor XML Unimed',
-    port=int(os.environ.get('PORT', 8080)),
-    reload=False,
-    show=False,  # não há navegador local para abrir num servidor publicado
-    # Em produção, defina a variável de ambiente STORAGE_SECRET com um valor
-    # aleatório e secreto. Sem isso, é gerado um novo a cada reinício (o que
-    # significa que sessões de navegador abertas antes de um redeploy perdem
-    # o estado — aceitável para esta aplicação, mas configure STORAGE_SECRET
-    # se quiser evitar isso).
-    storage_secret=os.environ.get('STORAGE_SECRET') or secrets.token_hex(16),
-)
+if __name__ in {"__main__", "__mp_main__"}:
+    # A guarda acima é o padrão recomendado pelo próprio NiceGUI (o
+    # framework usa multiprocessing internamente, e o processo filho é
+    # reimportado como "__mp_main__", não "__main__"). Sem ela, importar
+    # este arquivo como módulo — por exemplo, para rodar testes automatizados
+    # — já subiria o servidor de verdade.
+    ui.run(
+        title='Validador e Corretor XML Unimed',
+        port=int(os.environ.get('PORT', 8080)),
+        reload=False,
+        show=False,  # não há navegador local para abrir num servidor publicado
+        # Em produção, defina a variável de ambiente STORAGE_SECRET com um valor
+        # aleatório e secreto. Sem isso, é gerado um novo a cada reinício (o que
+        # significa que sessões de navegador abertas antes de um redeploy perdem
+        # o estado — aceitável para esta aplicação, mas configure STORAGE_SECRET
+        # se quiser evitar isso).
+        storage_secret=os.environ.get('STORAGE_SECRET') or secrets.token_hex(16),
+    )
