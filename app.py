@@ -337,6 +337,24 @@ def corrigir_motivo_encerramento(root, auditoria):
     auditoria['motivo_encerramento'].extend(logs)
     return len(logs)
 
+def corrigir_tipo_atendimento_sadt(guia, auditoria):
+    """Guias SADT: a tag <ans:tipoAtendimento> vem com '05' e esse valor não é
+    aceito; o valor correto é '02'. Só troca o '05' (outros valores ficam como
+    estão). Recebe UMA guia SADT por vez, para respeitar a blindagem de
+    prestadores feita no laço principal."""
+    logs = []
+    num_guia = guia.find('.//ans:cabecalhoGuia/ans:numeroGuiaPrestador', NS)
+    ref = f" {num_guia.text.strip()}" if num_guia is not None and num_guia.text and num_guia.text.strip() else ""
+    for elem in guia.findall('.//ans:tipoAtendimento', NS):
+        if elem.text and elem.text.strip() == '05':
+            elem.text = '02'
+            logs.append(f"Guia SADT{ref}: Tag <tipoAtendimento>: 05 ➔ 02")
+
+    if 'tipo_atendimento' not in auditoria:
+        auditoria['tipo_atendimento'] = []
+    auditoria['tipo_atendimento'].extend(logs)
+    return len(logs)
+
 def _somar_segundos(hora_str, segundos):
     """Soma 'segundos' a um horário HH:MM:SS, com rollover natural de minuto/hora
     (ex: 23:59:59 + 2s = 00:00:01)."""
@@ -652,7 +670,8 @@ def processar_xml_tiss(arquivo_xml, dfs):
     auditoria = {
         'cbos': [], 'medicos_trocados': [], 'itens': [], 'anvisa': [], 'unidades': [], 'oxigenio': [],
         'conveniados_excluidos': [], 'procedimentos_ajustados': [], 'guias_blindadas': [], 'erros': [],
-        'valores_negativos': [], 'motivo_encerramento': [], 'horarios_duplicados': [], 'fragmentados': []
+        'valores_negativos': [], 'motivo_encerramento': [], 'horarios_duplicados': [], 'fragmentados': [],
+        'tipo_atendimento': []
     }
     
     arquivo_xml.seek(0)
@@ -772,6 +791,10 @@ def processar_xml_tiss(arquivo_xml, dfs):
                 carteira_elem = guia.find('.//ans:dadosBeneficiario/ans:numeroCarteira', NS)
                 numero_carteira = limpar_numero(carteira_elem.text) if carteira_elem is not None and carteira_elem.text else ""
                 eh_unimed_0014 = identificar_plano_pela_carteira(numero_carteira) == '0014'
+
+            # --- TIPO DE ATENDIMENTO EM GUIAS SADT (05 ➔ 02) ---
+            if tipo_guia == 'sadt':
+                corrigir_tipo_atendimento_sadt(guia, auditoria)
 
             # --- SUBSTITUIÇÃO DE EQUIPE EM GUIAS SADT ---
             if tipo_guia == 'sadt':
@@ -1224,6 +1247,7 @@ TITULOS_AMIGAVEIS_AUDITORIA = {
     'erros': 'Avisos e Erros Durante o Processamento',
     'valores_negativos': 'Valores Negativos Corrigidos',
     'motivo_encerramento': 'Motivo de Encerramento (11 ➔ 12)',
+    'tipo_atendimento': 'Tipo de Atendimento SADT (05 ➔ 02)',
     'horarios_duplicados': 'Horários Escalonados (Anti-Duplicidade)',
     'fragmentados': 'Procedimentos Fragmentados para Outro Prestador'
 }
@@ -1601,7 +1625,7 @@ def pagina_principal():
     # trabalho — a área de trabalho ocupa todo o resto da janela.
     with ui.row().classes('tiss-appbar w-full') as barra_app:
         ui.icon('fact_check').classes('tiss-brand-icon')
-        ui.label('Corretor XML - UNIMED').classes('tiss-app-name')
+        ui.label('Validador TISS').classes('tiss-app-name')
     corpo = ui.column().classes('tiss-corpo')
 
     construir_aba_processamento(estado, editores, barra_app, corpo)
