@@ -1471,6 +1471,33 @@ ui.add_head_html("""
     // (veja atualizar_interface() em construir_editor_xml); aqui só ligamos
     // o listener uma única vez, no carregamento da página.
     window.__validadorTissAlterado = false;
+
+    // ATALHOS DE TECLADO. Usamos a fase de captura (3º argumento = true) para
+    // rodar ANTES dos atalhos nativos do editor CodeMirror e do navegador.
+    // Ctrl+F (ou Cmd+F no Mac) passa a abrir a barra "Localizar e substituir"
+    // da própria aplicação, em vez do painel de busca embutido no CodeMirror.
+    // Só intercepta quando há um arquivo aberto (o botão invisível abaixo
+    // existe); sem arquivo, o Ctrl+F normal do navegador continua funcionando.
+    window.addEventListener('keydown', function (e) {
+        if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'f' || e.key === 'F')) {
+            var alvo = document.getElementById('tiss-atalho-localizar');
+            if (alvo) {
+                e.preventDefault();
+                e.stopPropagation();
+                alvo.click();
+            }
+        }
+        // Ctrl+S (ou Cmd+S): aciona o mesmo botão "Baixar XML" (valida,
+        // recalcula o hash e baixa). Bloqueia o "Salvar página" do navegador.
+        if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 's' || e.key === 'S')) {
+            var baixar = document.getElementById('tiss-btn-baixar');
+            if (baixar) {
+                e.preventDefault();
+                e.stopPropagation();
+                baixar.click();
+            }
+        }
+    }, true);
     window.addEventListener('beforeunload', function (e) {
         if (window.__validadorTissAlterado) {
             e.preventDefault();
@@ -1571,7 +1598,7 @@ def pagina_principal():
     # trabalho — a área de trabalho ocupa todo o resto da janela.
     with ui.row().classes('tiss-appbar w-full') as barra_app:
         ui.icon('fact_check').classes('tiss-brand-icon')
-        ui.label('Validador TISS').classes('tiss-app-name')
+        ui.label('Corretor XML - UNIMED').classes('tiss-app-name')
     corpo = ui.column().classes('tiss-corpo')
 
     construir_aba_processamento(estado, editores, barra_app, corpo)
@@ -1900,12 +1927,12 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
             botao_desfazer = ui.button(icon='undo').props('flat dense round size=sm').tooltip('Desfazer')
             botao_refazer = ui.button(icon='redo').props('flat dense round size=sm').tooltip('Refazer')
             ui.separator().props('vertical inset').classes('mx-1')
-            botao_localizar_toggle = ui.button(icon='search').props('flat dense round size=sm').tooltip('Localizar e substituir')
+            botao_localizar_toggle = ui.button(icon='search').props('flat dense round size=sm').tooltip('Localizar e substituir (Ctrl+F)')
             botao_validar = ui.button(icon='check_circle').props('flat dense round size=sm').tooltip('Validar XML')
             botao_recarregar = ui.button(icon='refresh').props('flat dense round size=sm').tooltip('Recarregar (descarta alterações)')
             botao_copiar = ui.button(icon='content_copy').props('flat dense round size=sm').tooltip('Copiar código-fonte')
-        botao_baixar = ui.button('Baixar XML', icon='download').props('unelevated dense no-caps color=primary') \
-            .classes('tiss-btn-baixar').tooltip('Validar, recalcular hash e baixar XML')
+        botao_baixar = ui.button('Baixar XML', icon='download').props('unelevated dense no-caps color=primary id=tiss-btn-baixar') \
+            .classes('tiss-btn-baixar').tooltip('Validar, recalcular hash e baixar XML (Ctrl+S)')
 
     # Barra de Localizar/Substituir (oculta até o botão de busca ser clicado)
     with ui.row().classes('w-full items-center gap-2 no-wrap tiss-barra-localizar') as barra_localizar:
@@ -1923,6 +1950,15 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
         if barra_localizar.visible:
             campo_localizar.run_method('focus')
     botao_localizar_toggle.on('click', alternar_barra_localizar)
+
+    # Ctrl+F: sempre ABRE a barra (nunca fecha) e foca/seleciona o campo
+    # "Localizar", para já poder digitar por cima do termo anterior. O botão
+    # é invisível; o atalho global (JS no <head>) o aciona pelo id.
+    def abrir_barra_localizar(_=None):
+        barra_localizar.visible = True
+        campo_localizar.run_method('focus')
+        campo_localizar.run_method('select')
+    ui.button(on_click=abrir_barra_localizar).props('id=tiss-atalho-localizar').style('display: none')
     botao_fechar_localizar.on('click', lambda: setattr(barra_localizar, 'visible', False))
 
     # O editor ocupa toda a largura e toda a altura disponível. O painel de
