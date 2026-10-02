@@ -326,7 +326,7 @@ def corrigir_valores_negativos(root, auditoria):
 # Códigos de <motivoEncerramento> que devem ser trocados por '12'.
 # Para incluir outro código, é só acrescentar na lista (entre aspas, com dois
 # dígitos), por exemplo: ['11', '13', '21']
-MOTIVOS_ENCERRAMENTO_PARA_12 = ['11','15']
+MOTIVOS_ENCERRAMENTO_PARA_12 = ['11']
 
 def corrigir_motivo_encerramento(root, auditoria):
     logs = []
@@ -1380,8 +1380,18 @@ ui.add_head_html("""
         flex-wrap: nowrap !important;
         align-items: center !important;
     }
-    .tiss-seletor { width: 280px; min-width: 160px; flex: 0 1 280px; }
-    .tiss-contador { font-size: 12px; color: var(--tiss-texto-suave); white-space: nowrap; min-width: 40px; text-align: center; }
+    /* Linha de abas dos arquivos */
+    .tiss-abasbar {
+        flex: 0 0 auto; padding: 0 8px 0 4px; gap: 6px !important;
+        flex-wrap: nowrap !important; align-items: center !important;
+        background-color: var(--tiss-bg-painel); border: 1px solid var(--tiss-borda);
+        border-radius: 8px; box-shadow: 0 1px 2px var(--tiss-sombra);
+    }
+    .tiss-abas { flex: 1 1 0; min-width: 0; }
+    .tiss-abas .q-tab { min-height: 34px; padding: 0 14px; font-size: 12.5px; color: var(--tiss-texto-suave); }
+    .tiss-abas .q-tab:hover { color: var(--tiss-texto-forte); }
+    .tiss-abas .q-tab--active { background-color: var(--tiss-accent-suave); }
+    .tiss-abas .q-tab__label { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .tiss-campo { width: 150px; flex: 0 1 150px; min-width: 100px; }
     .tiss-campo input { font-family: var(--tiss-mono); font-size: 12.5px; }
     .tiss-controlbar .q-field--dense .q-field__control,
@@ -1800,29 +1810,22 @@ def painel_resultados(estado, editores):
         indice = nomes.index(valor_inicial)
         resultado = sucesso[indice]
 
-        def ir_para(novo_indice):
-            if 0 <= novo_indice < len(nomes):
-                estado['arquivo_selecionado'] = nomes[novo_indice]
-                painel_resultados.refresh()
-
         def ao_trocar_arquivo(e):
             estado['arquivo_selecionado'] = e.value
             painel_resultados.refresh()
 
-        # Barra de controle: seletor de arquivo (com navegação anterior/
-        # próximo) + campos Senha/Carteira + ferramentas de edição. Os dois
-        # últimos grupos são preenchidos por construir_editor_xml().
-        with ui.row().classes('tiss-controlbar w-full') as barra_controle:
-            seletor = ui.select(nomes, value=valor_inicial, label='Arquivo').props('dense outlined options-dense').classes('tiss-seletor')
-            seletor.on_value_change(ao_trocar_arquivo)
-            if len(nomes) > 1:
-                with ui.row().classes('items-center no-wrap gap-0'):
-                    ui.button(icon='chevron_left', on_click=lambda: ir_para(indice - 1)).props('flat dense round size=sm') \
-                        .set_enabled(indice > 0)
-                    ui.label(f'{indice + 1} de {len(nomes)}').classes('tiss-contador')
-                    ui.button(icon='chevron_right', on_click=lambda: ir_para(indice + 1)).props('flat dense round size=sm') \
-                        .set_enabled(indice < len(nomes) - 1)
+        # Linha de abas: uma aba por arquivo (clique para trocar). Com muitos
+        # arquivos a linha rola para o lado. O botão de ZIP fica no fim dela.
+        with ui.row().classes('tiss-abasbar w-full'):
+            with ui.tabs(value=valor_inicial, on_change=ao_trocar_arquivo) \
+                    .props('dense no-caps align=left inline-label active-color=primary indicator-color=primary') \
+                    .classes('tiss-abas'):
+                for nome_aba in nomes:
+                    aba = ui.tab(nome_aba, label=nome_aba)
+                    if len(nome_aba) > 28:
+                        aba.tooltip(nome_aba)
 
+            if len(nomes) > 1:
                 def baixar_zip():
                     buffer = io.BytesIO()
                     with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
@@ -1831,6 +1834,11 @@ def painel_resultados(estado, editores):
                     ui.download.content(buffer.getvalue(), 'XMLS_CORRIGIDOS.zip', media_type='application/zip')
                 ui.button(icon='folder_zip', on_click=baixar_zip).props('flat dense round size=sm') \
                     .tooltip('Baixar todos os XMLs corrigidos (.ZIP)')
+
+        # Barra de controle: campos Senha/Carteira + ferramentas de edição
+        # (preenchida por construir_editor_xml()).
+        with ui.row().classes('tiss-controlbar w-full') as barra_controle:
+            pass
 
         construir_editor_xml(estado, editores, resultado, barra_controle)
 
