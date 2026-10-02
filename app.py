@@ -1172,6 +1172,16 @@ _PADRAO_TAG_LINHA = re.compile(r'<([\w:.-]+)>([^<]*)</\1>')
 _PADRAO_SENHA = re.compile(r'<ans:senha>([^<]*)</ans:senha>')
 _PADRAO_CARTEIRA = re.compile(r'<ans:numeroCarteira>([^<]*)</ans:numeroCarteira>')
 
+def _normalizar_quebras_linha(texto):
+    """Devolve o texto só com quebras '\\n'. O CodeMirror conta cada quebra de
+    linha como UM caractere ('\\n'), mesmo que o texto tenha '\\r\\n'. O NiceGUI
+    sincroniza as edições enviando posições (não o texto inteiro), então se o
+    texto do servidor tiver '\\r\\n' as posições ficam deslocadas em 1
+    caractere por quebra de linha anterior e a edição é aplicada no lugar
+    errado. Por isso TODO texto que vai para o editor passa por aqui. O
+    '\\r\\n' é reaplicado na hora de gerar o arquivo final (download)."""
+    return texto.replace('\r\n', '\n').replace('\r', '\n')
+
 def _extrair_primeiro(padrao, texto):
     """Devolve o conteúdo do primeiro elemento que casar com o padrão, ou
     None se ele não existir no texto (arquivo sem esse campo, ex.: uma guia
@@ -1954,6 +1964,7 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
         _debounce['em_rajada'] = False
 
     def definir_conteudo(novo_texto, empilhar_undo=True):
+        novo_texto = _normalizar_quebras_linha(novo_texto)
         if empilhar_undo:
             ed['historico'].append(ed['texto_atual'])
             ed['historico'][:] = ed['historico'][-50:]
@@ -2050,7 +2061,7 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
     # edição pendente para mostrar.
     with ui.row().classes('tiss-editor-area w-full'):
         tema_editor = TEMA_XML_ESCURO if estado.get('tema_escuro') else TEMA_XML_CLARO
-        editor = ui.codemirror(value=ed['texto_atual'], language='XML', theme=tema_editor) \
+        editor = ui.codemirror(value=_normalizar_quebras_linha(ed['texto_atual']), language='XML', theme=tema_editor) \
             .classes('tiss-editor')
         ed['ui_editor'] = editor
         # O CodeMirror mede a posição de cada linha na tela no momento em
@@ -2294,7 +2305,9 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
             ed['erro_validacao'] = erro
             ui.notify(f'{erro}', type='negative', multi_line=True, close_button=True)
             return
-        novo_texto_final = novos_bytes.decode('ISO-8859-1')
+        # O texto do editor/estado fica só com \n (ver _normalizar_quebras_linha);
+        # os bytes do arquivo para download (novos_bytes) mantêm as quebras originais.
+        novo_texto_final = _normalizar_quebras_linha(novos_bytes.decode('ISO-8859-1'))
         definir_conteudo(novo_texto_final, empilhar_undo=False)
         ed['texto_base'] = novo_texto_final
         ed['hash_atual'] = _extrair_hash_do_texto(novo_texto_final)
