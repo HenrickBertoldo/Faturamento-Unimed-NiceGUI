@@ -1382,6 +1382,9 @@ ui.add_head_html("""
     }
     .tiss-editor .cm-editor { height: 100%; font-size: 13px; background-color: var(--tiss-bg-editor) !important; }
     .tiss-editor .cm-scroller { font-family: var(--tiss-mono) !important; line-height: 1.55; }
+    /* A ocorrência selecionada pela navegação do Localizar continua bem visível
+       mesmo com o foco no campo de busca (o CodeMirror a deixaria cinza-claro). */
+    .tiss-editor .cm-editor:not(.cm-focused) .cm-selectionBackground { background: rgba(250, 204, 21, 0.55) !important; }
     .tiss-editor .cm-gutters { background-color: var(--tiss-bg-editor) !important; border-right: 1px solid var(--tiss-borda) !important; }
 
     /* Painel lateral de alterações (só aparece quando há edição pendente) */
@@ -1805,6 +1808,46 @@ def painel_resultados(estado, editores):
 # EDITOR DE XML ESTILO DESKTOP (controles + editor/painel + status + mensagens)
 # — usa as MESMAS funções de negócio já validadas na versão Streamlit.
 # ==========================================================================
+def _js_navegar_ocorrencia(id_editor, termo, direcao):
+    """JavaScript que seleciona, no editor CodeMirror, a próxima (direcao=1) ou
+    a anterior (direcao=-1) ocorrência de `termo`, dando a volta no documento
+    ao chegar ao fim/início. Trabalha direto no texto do editor (o que está na
+    tela), com a mesma regra do contador existente: diferencia maiúsculas de
+    minúsculas e não conta ocorrências sobrepostas. Devolve {total, atual}.
+    É só navegação visual: não altera o texto."""
+    import json as _json
+    return f"""
+    (() => {{
+        const ed = getElement({int(id_editor)}).editor;
+        if (!ed) return null;
+        const termo = {_json.dumps(termo)};
+        const direcao = {int(direcao)};
+        const doc = ed.state.doc.toString();
+        const pos = [];
+        let i = 0;
+        while ((i = doc.indexOf(termo, i)) !== -1) {{ pos.push(i); i += termo.length; }}
+        if (!pos.length) return {{ total: 0, atual: 0 }};
+        const sel = ed.state.selection.main;
+        let k;
+        if (direcao > 0) {{
+            k = pos.findIndex(p => p >= sel.to);
+            if (k === -1) k = 0;
+        }} else {{
+            k = -1;
+            for (let j = pos.length - 1; j >= 0; j--) {{
+                if (pos[j] + termo.length <= sel.from) {{ k = j; break; }}
+            }}
+            if (k === -1) k = pos.length - 1;
+        }}
+        ed.dispatch({{
+            selection: {{ anchor: pos[k], head: pos[k] + termo.length }},
+            scrollIntoView: true,
+        }});
+        return {{ total: pos.length, atual: k + 1 }};
+    }})()
+    """
+
+
 def construir_editor_xml(estado, editores, resultado, barra_controle):
     nome_arquivo = resultado['nome']
     lote_id = estado['lote_id']
@@ -1940,6 +1983,8 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
         campo_substituir = ui.input('Substituir por').classes('flex-grow').props('dense outlined')
         resultado_busca = ui.label('').classes('text-xs text-gray-500 whitespace-nowrap')
         botao_loc = ui.button(icon='search').props('flat dense round').tooltip('Contar ocorrências')
+        botao_ant = ui.button(icon='keyboard_arrow_up').props('flat dense round').tooltip('Ocorrência anterior (Shift+Enter)')
+        botao_prox = ui.button(icon='keyboard_arrow_down').props('flat dense round').tooltip('Próxima ocorrência (Enter)')
         botao_sub_um = ui.button(icon='swap_horiz').props('flat dense round').tooltip('Substituir a primeira ocorrência')
         botao_sub_todos = ui.button('Substituir todos').props('flat dense no-caps')
         botao_fechar_localizar = ui.button(icon='close').props('flat dense round').tooltip('Fechar')
@@ -2321,6 +2366,30 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
         definir_conteudo(texto[:pos] + novo + texto[pos + len(termo):])
         resultado_busca.text = '1 ocorrência substituída.'
     botao_sub_um.on('click', substituir_um)
+
+    # Navegação entre as ocorrências encontradas (só seleciona e rola até a
+    # ocorrência no editor; não altera o texto nem as regras de busca/substituição).
+    async def navegar_ocorrencia(direcao):
+        termo = campo_localizar.value
+        if not termo:
+            resultado_busca.text = 'Informe o texto a localizar.'
+            return
+        try:
+            info = await ui.run_javascript(_js_navegar_ocorrencia(editor.id, termo, direcao), timeout=5)
+        except Exception:
+            return
+        if not info:
+            return
+        if info['total'] == 0:
+            resultado_busca.text = 'Nenhuma ocorrência encontrada.'
+        else:
+            resultado_busca.text = f"{info['atual']} de {info['total']}"
+    botao_prox.on('click', lambda _=None: navegar_ocorrencia(1))
+    botao_ant.on('click', lambda _=None: navegar_ocorrencia(-1))
+    # Enter no campo "Localizar" = próxima; Shift+Enter = anterior.
+    campo_localizar.on('keydown.enter',
+                       lambda e: navegar_ocorrencia(-1 if e.args.get('shiftKey') else 1),
+                       args=['shiftKey'])
 
     def substituir_todos(_=None):
         termo, novo = campo_localizar.value, campo_substituir.value
