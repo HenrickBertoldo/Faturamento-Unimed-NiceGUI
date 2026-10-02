@@ -323,14 +323,21 @@ def corrigir_valores_negativos(root, auditoria):
     auditoria['valores_negativos'].extend(logs)
     return len(logs)
 
+# Códigos de <motivoEncerramento> que devem ser trocados por '12'.
+# Para incluir outro código, é só acrescentar na lista (entre aspas, com dois
+# dígitos), por exemplo: ['11', '13', '21']
+MOTIVOS_ENCERRAMENTO_PARA_12 = ['11','15']
+
 def corrigir_motivo_encerramento(root, auditoria):
     logs = []
+    codigos = {str(c).strip() for c in MOTIVOS_ENCERRAMENTO_PARA_12}
     for elem in root.iter():
         tag_nome = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
         if tag_nome == 'motivoEncerramento' and elem.text:
-            if elem.text.strip() == '11':
+            codigo_original = elem.text.strip()
+            if codigo_original in codigos and codigo_original != '12':
                 elem.text = '12'
-                logs.append("Tag <motivoEncerramento>: 11 ➔ 12")
+                logs.append(f"Tag <motivoEncerramento>: {codigo_original} ➔ 12")
     
     if 'motivo_encerramento' not in auditoria:
         auditoria['motivo_encerramento'] = []
@@ -1246,7 +1253,7 @@ TITULOS_AMIGAVEIS_AUDITORIA = {
     'guias_blindadas': 'Guia(s) Blindada(s)',
     'erros': 'Avisos e Erros Durante o Processamento',
     'valores_negativos': 'Valores Negativos Corrigidos',
-    'motivo_encerramento': 'Motivo de Encerramento (11 ➔ 12)',
+    'motivo_encerramento': f"Motivo de Encerramento ({', '.join(str(c) for c in MOTIVOS_ENCERRAMENTO_PARA_12)} ➔ 12)",
     'tipo_atendimento': 'Tipo de Atendimento SADT (05 ➔ 02)',
     'horarios_duplicados': 'Horários Escalonados (Anti-Duplicidade)',
     'fragmentados': 'Procedimentos Fragmentados para Outro Prestador'
