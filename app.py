@@ -1212,168 +1212,257 @@ def calcular_diff_alteracoes(texto_base, texto_atual):
     return alteracoes
 
 TITULOS_AMIGAVEIS_AUDITORIA = {
-    'medicos_trocados': '🔀 Médicos e CRMs Substituídos',
-    'cbos': '👩‍⚕️ Médicos e CBOs Alterados',
-    'itens': '🔄 Itens e Medicamentos Traduzidos',
-    'anvisa': '🩺 Registros ANVISA Inseridos',
-    'unidades': '📦 Unidades de Medida Ajustadas',
-    'oxigenio': '⏱️ Tempos de Oxigênio Recalculados',
-    'conveniados_excluidos': '🤝 Médicos Conveniados Removidos',
-    'procedimentos_ajustados': '⚙️ Procedimentos Ajustados (Grau/Via/Técnica)',
-    'guias_blindadas': '🛡️ Guia(s) Blindada(s)',
-    'erros': '⚠️ Avisos e Erros Durante o Processamento',
-    'valores_negativos': '➖ Valores Negativos Corrigidos',
-    'motivo_encerramento': '🚪 Motivo de Encerramento (11 ➔ 12)',
-    'horarios_duplicados': '⏰ Horários Escalonados (Anti-Duplicidade)',
-    'fragmentados': '📦 Procedimentos Fragmentados para Outro Prestador'
+    'medicos_trocados': 'Médicos e CRMs Substituídos',
+    'cbos': 'Médicos e CBOs Alterados',
+    'itens': 'Itens e Medicamentos Traduzidos',
+    'anvisa': 'Registros ANVISA Inseridos',
+    'unidades': 'Unidades de Medida Ajustadas',
+    'oxigenio': 'Tempos de Oxigênio Recalculados',
+    'conveniados_excluidos': 'Médicos Conveniados Removidos',
+    'procedimentos_ajustados': 'Procedimentos Ajustados (Grau/Via/Técnica)',
+    'guias_blindadas': 'Guia(s) Blindada(s)',
+    'erros': 'Avisos e Erros Durante o Processamento',
+    'valores_negativos': 'Valores Negativos Corrigidos',
+    'motivo_encerramento': 'Motivo de Encerramento (11 ➔ 12)',
+    'horarios_duplicados': 'Horários Escalonados (Anti-Duplicidade)',
+    'fragmentados': 'Procedimentos Fragmentados para Outro Prestador'
 }
 
+# Paletas de syntax highlighting do editor XML (temas do CodeMirror).
+# GitHub Light / GitHub Dark: tags em verde, atributos em azul, valores em
+# azul-escuro/claro, comentários em cinza — contraste alto, sem cores
+# saturadas, aparência corporativa.
+TEMA_XML_CLARO = 'githubLight'
+TEMA_XML_ESCURO = 'githubDark'
 
-# ==========================================
-# TEMA VISUAL — identidade própria do Validador TISS: acentos em teal
-# (mais sóbrio que o azul padrão do Quasar, combina com o tom "saúde/
-# faturamento"), sombras suaves e cantos arredondados no lugar do visual
-# "flat" anterior, com transições sutis nos estados de hover.
-# ==========================================
 ui.add_head_html("""
 <style>
     :root {
-        --tiss-accent: #0f766e;
-        --tiss-accent-suave: #ccfbf1;
-        --tiss-borda: #e2e8f0;
-        --tiss-bg: #f4f7f6;
+        --tiss-accent: #2563eb;
+        --tiss-accent-suave: #e8effd;
+        --tiss-borda: #dde3ec;
+        --tiss-bg: #f3f5f9;
         --tiss-bg-painel: #ffffff;
-        --tiss-texto: #374151;
-        --tiss-texto-forte: #1f2937;
-        --tiss-texto-suave: #4b5563;
-        --tiss-sombra: rgba(15, 23, 42, 0.06);
+        --tiss-bg-editor: #ffffff;
+        --tiss-texto: #334155;
+        --tiss-texto-forte: #0f172a;
+        --tiss-texto-suave: #64748b;
+        --tiss-sombra: rgba(15, 23, 42, 0.05);
         --tiss-sombra-hover: rgba(15, 23, 42, 0.08);
         --tiss-diff-bg: #fffbeb;
         --tiss-diff-borda: #d97706;
         --tiss-diff-linha: #92400e;
+        --tiss-ok: #15803d;
+        --tiss-erro: #b91c1c;
+        --tiss-aviso: #b45309;
+        --tiss-mono: 'Cascadia Mono', 'JetBrains Mono', Consolas, 'SF Mono', Menlo, monospace;
     }
     /* Tema escuro: aplicado quando o Quasar liga o dark mode (ver botão de
        tema no topo da página, controlado por ui.dark_mode() no Python). */
     body.body--dark {
-        --tiss-accent: #2dd4bf;
-        --tiss-accent-suave: #134e4a;
-        --tiss-borda: #334155;
-        --tiss-bg: #0f172a;
-        --tiss-bg-painel: #1e293b;
+        --tiss-accent: #60a5fa;
+        --tiss-accent-suave: #1b2b4a;
+        --tiss-borda: #26324a;
+        --tiss-bg: #0b1220;
+        --tiss-bg-painel: #131c2e;
+        --tiss-bg-editor: #0d1117;
         --tiss-texto: #cbd5e1;
         --tiss-texto-forte: #f1f5f9;
-        --tiss-texto-suave: #94a3b8;
+        --tiss-texto-suave: #8b9ab5;
         --tiss-sombra: rgba(0, 0, 0, 0.35);
         --tiss-sombra-hover: rgba(0, 0, 0, 0.5);
-        --tiss-diff-bg: #3a2f0f;
+        --tiss-diff-bg: #2e260e;
         --tiss-diff-borda: #d97706;
         --tiss-diff-linha: #fbbf24;
+        --tiss-ok: #4ade80;
+        --tiss-erro: #f87171;
+        --tiss-aviso: #fbbf24;
     }
 
-    body { background-color: var(--tiss-bg) !important; transition: background-color .15s ease; }
+    /* ---------- Página fixa: sem rolagem, só o editor/painéis rolam ---------- */
+    html, body { height: 100%; overflow: hidden; }
+    body {
+        background-color: var(--tiss-bg) !important;
+        font-family: 'Segoe UI Variable', 'Segoe UI', Inter, system-ui, -apple-system, Roboto, sans-serif;
+        font-size: 13px;
+        transition: background-color .15s ease;
+    }
+    .q-layout, .q-page-container { height: 100dvh; min-height: 0 !important; }
+    .q-page { height: 100dvh !important; min-height: 0 !important; }
+    .nicegui-content {
+        height: 100%;
+        padding: 8px 12px 6px !important;
+        gap: 6px !important;
+        display: flex;
+        flex-direction: column;
+        flex-wrap: nowrap;
+        align-items: stretch;
+        overflow: hidden;
+    }
 
     .q-card {
         border-radius: 10px !important;
         background-color: var(--tiss-bg-painel) !important;
         color: var(--tiss-texto-forte) !important;
-        transition: background-color .15s ease, color .15s ease;
     }
 
-    .tiss-header, .tiss-toolbar, .tiss-statusbar, .tiss-panel {
+    /* ---------- Barra superior da aplicação ---------- */
+    .tiss-appbar, .tiss-controlbar, .tiss-statusbar, .tiss-mensagens, .tiss-barra-localizar {
         background-color: var(--tiss-bg-painel);
         border: 1px solid var(--tiss-borda);
         border-radius: 8px;
-        box-shadow: 0 1px 3px var(--tiss-sombra);
-        transition: box-shadow .15s ease, background-color .15s ease, border-color .15s ease;
+        box-shadow: 0 1px 2px var(--tiss-sombra);
     }
-    .tiss-header {
-        padding: 8px 14px;
-        border-left: 4px solid var(--tiss-accent);
+    .tiss-appbar {
+        position: relative;
+        flex: 0 0 auto;
+        padding: 4px 10px;
+        gap: 6px !important;
+        min-height: 40px;
+        flex-wrap: nowrap !important;
+        align-items: center !important;
     }
-    .tiss-campo-topo-label {
-        font-size: 11px;
-        font-weight: 600;
-        color: var(--tiss-texto-suave);
-        text-transform: uppercase;
-        letter-spacing: .02em;
-    }
-    .tiss-campo-topo-input { width: 200px; }
-    .tiss-campo-topo-input input { font-family: 'Consolas', monospace; font-size: 13px; }
-    .tiss-toolbar { padding: 4px 8px; }
-    .tiss-toolbar .q-btn {
-        border-radius: 6px;
-        transition: background-color .12s ease;
-    }
-    .tiss-toolbar .q-btn:hover {
-        background-color: var(--tiss-accent-suave);
-    }
-    .tiss-statusbar { padding: 6px 14px; font-size: 12.5px; color: var(--tiss-texto); }
-    .tiss-panel { padding: 10px; height: 74vh; overflow-y: auto; }
-    .tiss-panel:hover { box-shadow: 0 2px 6px var(--tiss-sombra-hover); }
+    .tiss-brand-icon { color: var(--tiss-accent); font-size: 20px; }
+    .tiss-app-name { font-weight: 700; color: var(--tiss-texto-forte); font-size: 14px; letter-spacing: .01em; margin-right: 6px; }
+    .tiss-progress { position: absolute !important; left: 8px; right: 8px; bottom: 0; width: auto !important; }
 
-    .tiss-app-name { font-weight: 700; color: var(--tiss-accent); font-size: 15px; }
-    .tiss-file-name { font-weight: 600; color: var(--tiss-texto); margin-left: 10px; transition: color .15s ease; }
-    .tiss-file-name.modificado { color: #b45309; }
+    /* Upload compacto: só o cabeçalho do q-uploader, como um botão de barra */
+    .tiss-upload.q-uploader {
+        width: auto; max-width: none; min-width: 0;
+        box-shadow: none; background: transparent; border-radius: 6px;
+        border: 1px solid var(--tiss-accent);
+    }
+    .tiss-upload .q-uploader__list { display: none; }
+    .tiss-upload .q-uploader__header {
+        background: transparent !important; color: var(--tiss-accent) !important;
+        padding: 0 4px 0 10px; min-height: 28px; align-items: center;
+    }
+    .tiss-upload .q-uploader__subtitle { display: none; }
+    .tiss-upload .q-uploader__title { font-size: 12.5px; font-weight: 600; line-height: 1.2; }
+    .tiss-upload .q-btn { color: var(--tiss-accent) !important; }
 
+    /* ---------- Barra de controle: arquivo, senha, carteira, edição ---------- */
+    .tiss-controlbar {
+        flex: 0 0 auto;
+        padding: 5px 8px;
+        gap: 8px !important;
+        flex-wrap: nowrap !important;
+        align-items: center !important;
+    }
+    .tiss-seletor { width: 280px; min-width: 160px; flex: 0 1 280px; }
+    .tiss-contador { font-size: 12px; color: var(--tiss-texto-suave); white-space: nowrap; min-width: 40px; text-align: center; }
+    .tiss-campo { width: 150px; flex: 0 1 150px; min-width: 100px; }
+    .tiss-campo input { font-family: var(--tiss-mono); font-size: 12.5px; }
+    .tiss-controlbar .q-field--dense .q-field__control,
+    .tiss-controlbar .q-field--dense .q-field__marginal { height: 34px; }
+    .tiss-controlbar .q-field__label { font-size: 12px; }
+    .tiss-ferramentas { gap: 0 !important; flex-wrap: nowrap !important; }
+    .tiss-ferramentas .q-btn { color: var(--tiss-texto-suave); }
+    .tiss-ferramentas .q-btn:hover { color: var(--tiss-accent); background-color: var(--tiss-accent-suave); }
+    .tiss-btn-baixar { font-weight: 600; padding: 0 12px; height: 32px; border-radius: 6px; }
+
+    /* ---------- Área de trabalho (ocupa todo o espaço restante) ---------- */
+    .tiss-corpo {
+        flex: 1 1 0; min-height: 0; width: 100%;
+        display: flex; flex-direction: column; gap: 6px !important; flex-wrap: nowrap;
+    }
+    .tiss-workspace {
+        flex: 1 1 0; min-height: 0; width: 100%;
+        display: flex; flex-direction: column; gap: 6px !important; flex-wrap: nowrap;
+    }
+    .tiss-editor-area {
+        flex: 1 1 0; min-height: 0; width: 100%;
+        gap: 6px !important; flex-wrap: nowrap !important; align-items: stretch !important;
+    }
+    .tiss-editor.nicegui-codemirror {
+        flex: 1 1 0; min-width: 0; height: 100%; width: auto;
+        border: 1px solid var(--tiss-borda); border-radius: 8px; overflow: hidden;
+        box-shadow: 0 1px 2px var(--tiss-sombra);
+        background-color: var(--tiss-bg-editor);
+    }
+    .tiss-editor .cm-editor { height: 100%; font-size: 13px; background-color: var(--tiss-bg-editor) !important; }
+    .tiss-editor .cm-scroller { font-family: var(--tiss-mono) !important; line-height: 1.55; }
+    .tiss-editor .cm-gutters { background-color: var(--tiss-bg-editor) !important; border-right: 1px solid var(--tiss-borda) !important; }
+
+    /* Painel lateral de alterações (só aparece quando há edição pendente) */
+    .tiss-diff-painel {
+        flex: 0 0 290px; width: 290px; min-height: 0;
+        background-color: var(--tiss-bg-painel);
+        border: 1px solid var(--tiss-borda); border-radius: 8px;
+        box-shadow: 0 1px 2px var(--tiss-sombra);
+        padding: 6px 8px; gap: 4px !important; flex-wrap: nowrap;
+    }
+    .tiss-diff-titulo { font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--tiss-texto-suave); }
+    .tiss-diff-lista { flex: 1 1 0; min-height: 0; overflow-y: auto; }
     .diff-item {
         border-left: 3px solid var(--tiss-diff-borda);
         background-color: var(--tiss-diff-bg);
-        padding: 7px 9px;
-        margin-bottom: 6px;
-        border-radius: 5px;
-        font-size: 12.5px;
-        transition: box-shadow .12s ease, background-color .15s ease;
+        padding: 5px 8px; margin-bottom: 5px; border-radius: 5px; font-size: 12px;
     }
-    .diff-item:hover { box-shadow: 0 1px 4px var(--tiss-sombra-hover); }
-    .diff-linha { color: var(--tiss-diff-linha); font-weight: 700; font-size: 11px; }
+    .diff-linha { color: var(--tiss-diff-linha); font-weight: 700; font-size: 10.5px; }
     .diff-campo { color: var(--tiss-texto-forte); font-weight: 600; }
-    .diff-valores { color: var(--tiss-texto-suave); font-family: 'Consolas', monospace; font-size: 11.5px; }
+    .diff-valores { color: var(--tiss-texto-suave); font-family: var(--tiss-mono); font-size: 11px; word-break: break-all; }
 
-    /* Ajusta, no tema escuro, as classes de texto tipo Tailwind usadas em
-       vários pontos do app (avisos, status, rótulos secundários) para
-       manter contraste legível sobre fundo escuro. */
+    /* Barra de Localizar/Substituir (oculta até o botão de busca ser clicado) */
+    .tiss-barra-localizar { flex: 0 0 auto; padding: 4px 8px; background-color: var(--tiss-accent-suave); }
+
+    /* ---------- Barra de status compacta ---------- */
+    .tiss-statusbar {
+        flex: 0 0 auto; padding: 3px 12px; min-height: 28px;
+        font-size: 12px; color: var(--tiss-texto);
+        gap: 14px !important; flex-wrap: nowrap !important; align-items: center !important;
+    }
+    .tiss-file-name { font-weight: 600; color: var(--tiss-texto-forte); white-space: nowrap; }
+    .tiss-file-name.modificado { color: var(--tiss-aviso); }
+    .tiss-st { white-space: nowrap; color: var(--tiss-texto-suave); }
+    .tiss-st-sujo, .tiss-st-salvo { font-weight: 600; }
+    .tiss-st-sujo { color: var(--tiss-aviso); }
+    .tiss-st-salvo { color: var(--tiss-ok); }
+    .tiss-st-sujo::before, .tiss-st-salvo::before {
+        content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+        background: currentColor; margin-right: 6px; vertical-align: 1px;
+    }
+    .tiss-hash {
+        margin-left: auto; min-width: 0; flex: 0 1 auto;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        color: var(--tiss-texto-suave); font-size: 11.5px;
+    }
+    .tiss-hash code { font-family: var(--tiss-mono); font-size: 11.5px; color: var(--tiss-texto); background: none; padding: 0; }
+    .tiss-hash code.dif { color: var(--tiss-aviso); font-weight: 600; }
+    .tiss-hash .sep { display: inline-block; width: 1px; height: 11px; background: var(--tiss-borda); margin: 0 10px; vertical-align: -1px; }
+
+    /* ---------- Painel de Mensagens (retrátil, rolagem interna) ---------- */
+    .tiss-mensagens { flex: 0 0 auto; padding: 0; overflow: hidden; }
+    .tiss-mensagens .q-item { min-height: 32px; padding: 0 12px; }
+    .tiss-mensagens-titulo { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--tiss-texto-suave); }
+    .tiss-mensagens-corpo {
+        max-height: min(22vh, 200px); overflow-y: auto;
+        padding: 4px 14px 8px; gap: 2px !important;
+        border-top: 1px solid var(--tiss-borda);
+    }
+    .tiss-mensagens-corpo .q-icon { font-size: 16px; }
+    .tiss-mensagens-corpo .linha { gap: 8px !important; flex-wrap: nowrap !important; align-items: center !important; }
+    .tiss-msg-ok { color: var(--tiss-ok); font-weight: 600; font-size: 12.5px; }
+    .tiss-msg-erro { color: var(--tiss-erro); font-weight: 600; font-size: 12.5px; }
+    .tiss-msg-ok::before, .tiss-msg-erro::before {
+        content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+        background: currentColor; margin-right: 6px; vertical-align: 1px;
+    }
+
+    /* Estado vazio (nenhum arquivo carregado) */
+    .tiss-vazio { flex: 1 1 0; color: var(--tiss-texto-suave); gap: 4px !important; }
+
+    /* Textos tipo Tailwind usados em avisos/rótulos — contraste no tema escuro */
     body.body--dark .text-gray-600, body.body--dark .text-gray-500 { color: #94a3b8 !important; }
     body.body--dark .text-red-700 { color: #f87171 !important; }
     body.body--dark .text-green-700 { color: #4ade80 !important; }
     body.body--dark .text-amber-700 { color: #fbbf24 !important; }
 
-    /* Abas de arquivo (substituem o antigo menu suspenso de seleção) */
-    .tiss-abas-arquivo {
-        background-color: var(--tiss-bg-painel);
-        border: 1px solid var(--tiss-borda);
-        border-radius: 8px;
-        padding: 2px 6px;
-    }
-
-    /* Barra de Localizar/Substituir ancorada sob o editor (oculta até o
-       botão de busca na toolbar ser clicado) */
-    .tiss-barra-localizar {
-        background-color: var(--tiss-accent-suave);
-        border: 1px solid var(--tiss-borda);
-        border-radius: 8px;
-        padding: 6px 10px;
-    }
-
-    /* Painel de Mensagens: validade do XML + resumo da correção automática,
-       sempre visível (em vez de só um toast que desaparece) */
-    .tiss-mensagens {
-        background-color: var(--tiss-bg-painel);
-        border: 1px solid var(--tiss-borda);
-        border-radius: 8px;
-        padding: 10px 14px;
-        box-shadow: 0 1px 3px var(--tiss-sombra);
-    }
-    .tiss-mensagens-titulo {
-        font-size: 11px;
-        font-weight: 700;
-        letter-spacing: .05em;
-        color: var(--tiss-texto-suave);
-    }
-    .tiss-mensagens-item { color: var(--tiss-texto); font-size: 12.5px; }
-    .tiss-msg-ok { color: #15803d; font-weight: 600; }
-    .tiss-msg-erro { color: #b91c1c; font-weight: 600; }
-    body.body--dark .tiss-msg-ok { color: #4ade80; }
-    body.body--dark .tiss-msg-erro { color: #f87171; }
+    /* Barras de rolagem discretas */
+    .tiss-mensagens-corpo::-webkit-scrollbar, .tiss-diff-lista::-webkit-scrollbar,
+    .tiss-editor .cm-scroller::-webkit-scrollbar { width: 10px; height: 10px; }
+    .tiss-mensagens-corpo::-webkit-scrollbar-thumb, .tiss-diff-lista::-webkit-scrollbar-thumb,
+    .tiss-editor .cm-scroller::-webkit-scrollbar-thumb { background: var(--tiss-borda); border-radius: 6px; border: 2px solid transparent; background-clip: content-box; }
 </style>
 <script>
     // Aviso nativo do navegador ao tentar fechar/recarregar a aba com
@@ -1395,7 +1484,7 @@ ui.add_head_html("""
 
 @ui.page('/')
 def pagina_principal():
-    ui.colors(primary='#0f766e')  # identidade visual do app: teal em vez do azul padrão do Quasar
+    ui.colors(primary='#2563eb')  # acento corporativo azul (tokens de cor em --tiss-accent no CSS acima)
 
     # ======================================================================
     # ESTADO DESTA SESSÃO/ABA DO NAVEGADOR — cada usuário que abrir a
@@ -1433,12 +1522,12 @@ def pagina_principal():
         estado['tema_escuro'] = e.value
         app.storage.user['tiss_tema_escuro'] = e.value
         modo_escuro.set_value(e.value)
-        novo_tema_editor = 'basicDark' if e.value else 'basicLight'
+        novo_tema_editor = TEMA_XML_ESCURO if e.value else TEMA_XML_CLARO
         for ed in editores.values():
             if ed.get('ui_editor') is not None:
                 ed['ui_editor'].set_theme(novo_tema_editor)
 
-    # 🆕 RECARREGAR REGRAS DA PLANILHA — as tabelas (medicos, itens,
+    # RECARREGAR REGRAS DA PLANILHA — as tabelas (medicos, itens,
     # procedimentos etc.) só eram lidas do Google Sheets UMA VEZ, quando a
     # página é aberta. Se alguém edita uma regra na planilha enquanto a aba
     # já está aberta, o processamento continuava usando a versão antiga até
@@ -1452,42 +1541,58 @@ def pagina_principal():
         painel_avisos_sheets.refresh()
         if novos_avisos:
             ui.notify(
-                f"🔄 Regras recarregadas com {len(novos_avisos)} aviso(s) — veja o painel abaixo. "
+                f"Regras recarregadas com {len(novos_avisos)} aviso(s) — veja o ícone de aviso na barra superior. "
                 "Lotes já processados NÃO são reprocessados automaticamente.",
                 type='warning', multi_line=True,
             )
         else:
             ui.notify(
-                "🔄 Regras recarregadas da planilha com sucesso. Lotes já processados NÃO são "
+                "Regras recarregadas da planilha com sucesso. Lotes já processados NÃO são "
                 "reprocessados automaticamente — reenvie os arquivos se precisar aplicar a mudança.",
                 type='positive', multi_line=True,
             )
 
-    with ui.row().classes('w-full items-center justify-between gap-2'):
-        ui.button('🔄 Recarregar regras da planilha', on_click=recarregar_regras, color='primary').props('flat dense')
-        with ui.row().classes('items-center gap-2'):
+    @ui.refreshable
+    def painel_avisos_sheets():
+        # Avisos de carga das regras: viram um ícone com contador na barra
+        # superior (clique abre a lista), em vez de um painel que empurrava
+        # o conteúdo da página para baixo.
+        if estado['avisos_sheets']:
+            with ui.button(icon='warning').props('flat dense round size=sm color=warning'):
+                ui.badge(str(len(estado['avisos_sheets'])), color='warning').props('floating rounded')
+                ui.tooltip('Avisos ao carregar as regras do Google Sheets')
+                with ui.menu().props('max-width=560px'):
+                    with ui.column().classes('gap-1 p-3'):
+                        ui.label(f"{len(estado['avisos_sheets'])} aviso(s) ao carregar as regras do Google Sheets").classes('text-sm font-semibold')
+                        for a in estado['avisos_sheets']:
+                            ui.label(f"• {a}").classes('text-xs text-amber-700')
+
+    # Barra superior (marca, envio de arquivos, ações globais) e área de
+    # trabalho — a área de trabalho ocupa todo o resto da janela.
+    with ui.row().classes('tiss-appbar w-full') as barra_app:
+        ui.icon('fact_check').classes('tiss-brand-icon')
+        ui.label('Validador TISS').classes('tiss-app-name')
+    corpo = ui.column().classes('tiss-corpo')
+
+    construir_aba_processamento(estado, editores, barra_app, corpo)
+
+    with barra_app:
+        ui.space()
+        painel_avisos_sheets()
+        ui.button(icon='sync', on_click=recarregar_regras).props('flat dense round size=sm') \
+            .tooltip('Recarregar regras da planilha')
+        with ui.row().classes('items-center gap-1 no-wrap'):
             ui.icon('light_mode').classes('text-sm')
             ui.switch(value=estado['tema_escuro'], on_change=alternar_tema).props('color=primary dense').tooltip('Alternar entre tema claro e escuro')
             ui.icon('dark_mode').classes('text-sm')
 
-    @ui.refreshable
-    def painel_avisos_sheets():
-        if estado['avisos_sheets']:
-            with ui.expansion(f"⚠️ {len(estado['avisos_sheets'])} aviso(s) ao carregar as regras do Google Sheets", icon='warning').classes('w-full mb-2'):
-                for a in estado['avisos_sheets']:
-                    ui.label(f"• {a}").classes('text-sm text-amber-700')
-
-    with ui.column().classes('w-full max-w-none gap-2'):
-        painel_avisos_sheets()
-        construir_aba_processamento(estado, editores)
-
 
 # ==========================================================================
-# ABA "PROCESSAR XMLs"
+# CONTROLES DE ENVIO / PROCESSAMENTO (barra superior)
 # ==========================================================================
-def construir_aba_processamento(estado, editores):
+def construir_aba_processamento(estado, editores, barra_app, corpo):
 
-    # 🆕 PROCESSAMENTO AUTOMÁTICO: assim que o(s) arquivo(s) termina(m) de
+    # PROCESSAMENTO AUTOMÁTICO: assim que o(s) arquivo(s) termina(m) de
     # subir, a correção já roda sozinha — sem precisar de um botão
     # "Iniciar Correção" separado. on_multi_upload dispara UMA vez com todos
     # os arquivos de um mesmo gesto de seleção (clique único ou arrastar
@@ -1498,11 +1603,11 @@ def construir_aba_processamento(estado, editores):
             estado['arquivos_pendentes'].append((arquivo.name, conteudo))
         await iniciar_correcao()
 
-    with ui.card().classes('w-full'):
-        ui.label('📜 Processamento de XMLs').classes('text-lg font-bold')
-        ui.label('Selecione um ou vários arquivos XML — a correção roda automaticamente assim que o(s) '
-                  'arquivo(s) terminar(em) de subir.').classes('text-sm text-gray-600')
-        ui.upload(on_multi_upload=ao_receber_upload, multiple=True, auto_upload=True).props('accept=.xml').classes('w-full')
+    with barra_app:
+        ui.separator().props('vertical inset')
+        ui.upload(on_multi_upload=ao_receber_upload, multiple=True, auto_upload=True) \
+            .props('accept=.xml flat label="Enviar XML"').classes('tiss-upload') \
+            .tooltip('Selecione ou arraste um ou vários XMLs — a correção roda automaticamente')
 
         async def iniciar_correcao():
             if not estado['arquivos_pendentes']:
@@ -1517,7 +1622,7 @@ def construir_aba_processamento(estado, editores):
                     resultado['xml_bytes'] = xml_resultado
                     resultado['auditoria'] = auditoria
                     resultados.append(resultado)
-                    # 🆕 Cada fragmento de honorários gerado (ex.: prestador
+                    # Cada fragmento de honorários gerado (ex.: prestador
                     # 220163) vira um resultado independente, com nome próprio
                     # — assim ele aparece no seletor de arquivos, pode ser
                     # editado/validado como qualquer outro, e entra junto no
@@ -1536,7 +1641,7 @@ def construir_aba_processamento(estado, editores):
                             'nome': nome_frag, 'xml_bytes': frag['xml_bytes'],
                             'auditoria': auditoria_frag, 'falha_total': None,
                         })
-                    # 🆕 Vincula o principal a cada fragmento gerado a partir
+                    # Vincula o principal a cada fragmento gerado a partir
                     # dele (e vice-versa): assim, baixando qualquer um dos
                     # arquivos do grupo pelo botão de download normal, os
                     # outros do mesmo grupo saem juntos — sem precisar do
@@ -1596,73 +1701,84 @@ def construir_aba_processamento(estado, editores):
                     ui.button('Limpar mesmo assim', color='negative', on_click=confirmar_limpeza)
             dialogo_limpar.open()
 
-        with ui.row().classes('w-full mt-2 gap-2 no-wrap justify-end'):
-            ui.button('🧹 Limpar Lista', on_click=limpar_lista_processados).props('flat')
-        barra = ui.linear_progress(value=0).classes('w-full mt-1')
+        ui.button(icon='delete_sweep', on_click=limpar_lista_processados).props('flat dense round size=sm') \
+            .tooltip('Limpar lista de arquivos processados')
+        barra = ui.linear_progress(value=0, show_value=False).props('size=3px').classes('tiss-progress')
         barra.visible = False
 
-    painel_resultados(estado, editores)
+    with corpo:
+        painel_resultados(estado, editores)
 
 
 @ui.refreshable
 def painel_resultados(estado, editores):
     resultados = estado['resultados_lote']
     if not resultados:
+        with ui.column().classes('tiss-vazio w-full items-center justify-center'):
+            ui.icon('upload_file').classes('text-5xl')
+            ui.label('Nenhum arquivo carregado').classes('text-base font-semibold')
+            ui.label('Use "Enviar XML" na barra superior para começar.').classes('text-sm')
         return
 
-    with ui.card().classes('w-full mt-2'):
-        ui.label('📁 Arquivos Processados').classes('text-lg font-bold mb-1')
+    sucesso = [r for r in resultados if not r.get('falha_total')]
+    falhas = [r for r in resultados if r.get('falha_total')]
 
-        sucesso = [r for r in resultados if not r.get('falha_total')]
-        falhas = [r for r in resultados if r.get('falha_total')]
-
+    with ui.column().classes('tiss-workspace'):
         if falhas:
-            with ui.expansion(f'❌ {len(falhas)} arquivo(s) com falha total', icon='error', value=True).classes('w-full'):
-                for r in falhas:
-                    ui.label(f"{r['nome']}: {r['falha_total']}").classes('text-sm text-red-700')
+            with ui.expansion(f'{len(falhas)} arquivo(s) com falha total', icon='error', value=True).props('dense').classes('w-full tiss-mensagens'):
+                with ui.column().classes('tiss-mensagens-corpo w-full'):
+                    for r in falhas:
+                        ui.label(f"{r['nome']}: {r['falha_total']}").classes('text-sm text-red-700')
 
         if not sucesso:
             return
 
         nomes = [r['nome'] for r in sucesso]
         valor_inicial = estado['arquivo_selecionado'] if estado['arquivo_selecionado'] in nomes else nomes[0]
+        estado['arquivo_selecionado'] = valor_inicial
+        indice = nomes.index(valor_inicial)
+        resultado = sucesso[indice]
 
-        if len(sucesso) > 1:
-            def baixar_zip():
-                buffer = io.BytesIO()
-                with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-                    for r in sucesso:
-                        zf.writestr(f"PRONTO_{r['nome']}", r['xml_bytes'])
-                ui.download.content(buffer.getvalue(), 'XMLS_CORRIGIDOS.zip', media_type='application/zip')
-            ui.button('📦 Baixar Todos os XMLs Corrigidos (.ZIP)', on_click=baixar_zip, color='primary').classes('w-full mb-2')
-
-        # Faixa de abas — um arquivo aberto por aba, como num editor de
-        # desktop. Usamos o próprio nome do arquivo como identidade da aba
-        # (name=), o que a torna estável entre um refresh e outro deste
-        # painel (@ui.refreshable recria os elementos do zero a cada troca).
-        with ui.tabs().props('dense align=left inline-label active-color=primary indicator-color=primary') \
-                .classes('w-full tiss-abas-arquivo') as abas_arquivo:
-            for nome in nomes:
-                ui.tab(name=nome, label=nome, icon='description')
-        abas_arquivo.set_value(valor_inicial)
-
-        nome_escolhido = abas_arquivo.value
-        estado['arquivo_selecionado'] = nome_escolhido
-        resultado = next(r for r in sucesso if r['nome'] == nome_escolhido)
+        def ir_para(novo_indice):
+            if 0 <= novo_indice < len(nomes):
+                estado['arquivo_selecionado'] = nomes[novo_indice]
+                painel_resultados.refresh()
 
         def ao_trocar_arquivo(e):
             estado['arquivo_selecionado'] = e.value
             painel_resultados.refresh()
-        abas_arquivo.on_value_change(ao_trocar_arquivo)
 
-    construir_editor_xml(estado, editores, resultado)
+        # Barra de controle: seletor de arquivo (com navegação anterior/
+        # próximo) + campos Senha/Carteira + ferramentas de edição. Os dois
+        # últimos grupos são preenchidos por construir_editor_xml().
+        with ui.row().classes('tiss-controlbar w-full') as barra_controle:
+            seletor = ui.select(nomes, value=valor_inicial, label='Arquivo').props('dense outlined options-dense').classes('tiss-seletor')
+            seletor.on_value_change(ao_trocar_arquivo)
+            if len(nomes) > 1:
+                with ui.row().classes('items-center no-wrap gap-0'):
+                    ui.button(icon='chevron_left', on_click=lambda: ir_para(indice - 1)).props('flat dense round size=sm') \
+                        .set_enabled(indice > 0)
+                    ui.label(f'{indice + 1} de {len(nomes)}').classes('tiss-contador')
+                    ui.button(icon='chevron_right', on_click=lambda: ir_para(indice + 1)).props('flat dense round size=sm') \
+                        .set_enabled(indice < len(nomes) - 1)
+
+                def baixar_zip():
+                    buffer = io.BytesIO()
+                    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+                        for r in sucesso:
+                            zf.writestr(f"PRONTO_{r['nome']}", r['xml_bytes'])
+                    ui.download.content(buffer.getvalue(), 'XMLS_CORRIGIDOS.zip', media_type='application/zip')
+                ui.button(icon='folder_zip', on_click=baixar_zip).props('flat dense round size=sm') \
+                    .tooltip('Baixar todos os XMLs corrigidos (.ZIP)')
+
+        construir_editor_xml(estado, editores, resultado, barra_controle)
 
 
 # ==========================================================================
-# EDITOR DE XML ESTILO DESKTOP (header + toolbar + editor/painel + status bar)
+# EDITOR DE XML ESTILO DESKTOP (controles + editor/painel + status + mensagens)
 # — usa as MESMAS funções de negócio já validadas na versão Streamlit.
 # ==========================================================================
-def construir_editor_xml(estado, editores, resultado):
+def construir_editor_xml(estado, editores, resultado, barra_controle):
     nome_arquivo = resultado['nome']
     lote_id = estado['lote_id']
     chave = (lote_id, nome_arquivo)
@@ -1761,47 +1877,61 @@ def construir_editor_xml(estado, editores, resultado):
         if novo_texto != ed['texto_atual']:
             definir_conteudo(novo_texto)
 
-    with ui.column().classes('w-full gap-2 mt-2'):
-        with ui.row().classes('w-full items-center justify-between tiss-header no-wrap'):
-            with ui.row().classes('items-center gap-0'):
-                ui.label('📄 Validador TISS').classes('tiss-app-name')
-                label_arquivo = ui.label(nome_arquivo).classes('tiss-file-name')
-            with ui.row().classes('items-center gap-3 tiss-campos-topo'):
-                with ui.column().classes('gap-0'):
-                    ui.label('Senha').classes('tiss-campo-topo-label')
-                    with ui.row().classes('items-center gap-1 no-wrap'):
-                        campo_senha = ui.input(value=_extrair_primeiro(_PADRAO_SENHA, ed['texto_atual']) or '') \
-                            .props('dense outlined').classes('tiss-campo-topo-input')
-                        ui.button(icon='content_copy').props('flat dense round size=sm') \
-                            .tooltip('Copiar').on('click', lambda: _copiar_campo(campo_senha.value))
-                with ui.column().classes('gap-0'):
-                    ui.label('Número da Carteira').classes('tiss-campo-topo-label')
-                    with ui.row().classes('items-center gap-1 no-wrap'):
-                        campo_carteira = ui.input(value=_extrair_primeiro(_PADRAO_CARTEIRA, ed['texto_atual']) or '') \
-                            .props('dense outlined').classes('tiss-campo-topo-input')
-                        ui.button(icon='content_copy').props('flat dense round size=sm') \
-                            .tooltip('Copiar').on('click', lambda: _copiar_campo(campo_carteira.value))
+    # Campos Senha / Número da Carteira + ferramentas de edição, na barra de
+    # controle criada em painel_resultados (mesma linha do seletor de arquivo).
+    with barra_controle:
+        with ui.input(label='Senha', value=_extrair_primeiro(_PADRAO_SENHA, ed['texto_atual']) or '') \
+                .props('dense outlined').classes('tiss-campo') as campo_senha:
+            with campo_senha.add_slot('append'):
+                ui.button(icon='content_copy').props('flat dense round size=xs') \
+                    .tooltip('Copiar').on('click', lambda: _copiar_campo(campo_senha.value))
+        with ui.input(label='Número da Carteira', value=_extrair_primeiro(_PADRAO_CARTEIRA, ed['texto_atual']) or '') \
+                .props('dense outlined').classes('tiss-campo') as campo_carteira:
+            with campo_carteira.add_slot('append'):
+                ui.button(icon='content_copy').props('flat dense round size=xs') \
+                    .tooltip('Copiar').on('click', lambda: _copiar_campo(campo_carteira.value))
         campo_senha.props('debounce=500')
         campo_carteira.props('debounce=500')
         campo_senha.on_value_change(lambda e: ao_editar_campo_topo(_PADRAO_SENHA, 'ignorar_proximo_senha', e.value))
         campo_carteira.on_value_change(lambda e: ao_editar_campo_topo(_PADRAO_CARTEIRA, 'ignorar_proximo_carteira', e.value))
 
-        with ui.row().classes('w-full items-center tiss-toolbar gap-1'):
-            botao_desfazer = ui.button(icon='undo').props('flat dense').tooltip('Desfazer')
-            botao_refazer = ui.button(icon='redo').props('flat dense').tooltip('Refazer')
-            botao_localizar_toggle = ui.button(icon='search').props('flat dense').tooltip('Localizar e substituir')
-            botao_validar = ui.button(icon='check_circle').props('flat dense').tooltip('Validar XML')
-            botao_recarregar = ui.button(icon='refresh').props('flat dense').tooltip('Recarregar (descarta alterações)')
-            botao_baixar = ui.button(icon='download').props('flat dense').tooltip('Validar, recalcular hash e baixar XML')
-            botao_copiar = ui.button(icon='content_copy').props('flat dense').tooltip('Copiar código-fonte')
+        ui.space()
+        with ui.row().classes('items-center tiss-ferramentas'):
+            botao_desfazer = ui.button(icon='undo').props('flat dense round size=sm').tooltip('Desfazer')
+            botao_refazer = ui.button(icon='redo').props('flat dense round size=sm').tooltip('Refazer')
+            ui.separator().props('vertical inset').classes('mx-1')
+            botao_localizar_toggle = ui.button(icon='search').props('flat dense round size=sm').tooltip('Localizar e substituir')
+            botao_validar = ui.button(icon='check_circle').props('flat dense round size=sm').tooltip('Validar XML')
+            botao_recarregar = ui.button(icon='refresh').props('flat dense round size=sm').tooltip('Recarregar (descarta alterações)')
+            botao_copiar = ui.button(icon='content_copy').props('flat dense round size=sm').tooltip('Copiar código-fonte')
+        botao_baixar = ui.button('Baixar XML', icon='download').props('unelevated dense no-caps color=primary') \
+            .classes('tiss-btn-baixar').tooltip('Validar, recalcular hash e baixar XML')
 
-        # O editor agora ocupa a largura inteira — é o elemento principal da
-        # tela. O painel de alterações manuais pendentes (antes ao lado)
-        # virou uma faixa retrátil logo abaixo, que só se abre sozinha
-        # quando existe uma edição pendente para mostrar.
-        tema_editor = 'basicDark' if estado.get('tema_escuro') else 'basicLight'
+    # Barra de Localizar/Substituir (oculta até o botão de busca ser clicado)
+    with ui.row().classes('w-full items-center gap-2 no-wrap tiss-barra-localizar') as barra_localizar:
+        campo_localizar = ui.input('Localizar').classes('flex-grow').props('dense outlined')
+        campo_substituir = ui.input('Substituir por').classes('flex-grow').props('dense outlined')
+        resultado_busca = ui.label('').classes('text-xs text-gray-500 whitespace-nowrap')
+        botao_loc = ui.button(icon='search').props('flat dense round').tooltip('Contar ocorrências')
+        botao_sub_um = ui.button(icon='swap_horiz').props('flat dense round').tooltip('Substituir a primeira ocorrência')
+        botao_sub_todos = ui.button('Substituir todos').props('flat dense no-caps')
+        botao_fechar_localizar = ui.button(icon='close').props('flat dense round').tooltip('Fechar')
+    barra_localizar.visible = False
+
+    def alternar_barra_localizar(_=None):
+        barra_localizar.visible = not barra_localizar.visible
+        if barra_localizar.visible:
+            campo_localizar.run_method('focus')
+    botao_localizar_toggle.on('click', alternar_barra_localizar)
+    botao_fechar_localizar.on('click', lambda: setattr(barra_localizar, 'visible', False))
+
+    # O editor ocupa toda a largura e toda a altura disponível. O painel de
+    # alterações manuais pendentes só aparece (à direita) quando existe uma
+    # edição pendente para mostrar.
+    with ui.row().classes('tiss-editor-area w-full'):
+        tema_editor = TEMA_XML_ESCURO if estado.get('tema_escuro') else TEMA_XML_CLARO
         editor = ui.codemirror(value=ed['texto_atual'], language='XML', theme=tema_editor) \
-            .classes('w-full border').style('height: 62vh; font-size: 13px')
+            .classes('tiss-editor')
         ed['ui_editor'] = editor
         # O CodeMirror mede a posição de cada linha na tela no momento em
         # que é criado. Se, nesse instante, o layout da página ainda não
@@ -1817,101 +1947,98 @@ def construir_editor_xml(estado, editores, resultado):
         # definitivo, sem precisar de nenhum redimensionamento real.
         ui.timer(0.4, lambda: ui.run_javascript("window.dispatchEvent(new Event('resize'));"), once=True)
 
-        with ui.expansion('Alterações manuais pendentes', icon='edit_note').classes('w-full') as expansao_alteracoes:
-            painel_alteracoes = ui.column().classes('w-full gap-0')
+        with ui.column().classes('tiss-diff-painel') as expansao_alteracoes:
+            with ui.row().classes('w-full items-center justify-between no-wrap'):
+                ui.label('Alterações manuais pendentes').classes('tiss-diff-titulo')
+                ui.button(icon='close', on_click=lambda: expansao_alteracoes.set_visibility(False)) \
+                    .props('flat dense round size=xs').tooltip('Ocultar painel')
+            painel_alteracoes = ui.column().classes('tiss-diff-lista w-full gap-0')
+        expansao_alteracoes.set_visibility(False)
 
+    # ---------------- Barra de status compacta ----------------
+    with ui.row().classes('w-full items-center tiss-statusbar'):
+        ui.icon('description').classes('text-base').style('color: var(--tiss-texto-suave)')
+        label_arquivo = ui.label(nome_arquivo).classes('tiss-file-name')
+        status_linhas = ui.label().classes('tiss-st')
+        status_alteracoes = ui.label()
+        status_hash = ui.html().classes('tiss-hash')
 
-        with ui.row().classes('w-full items-center gap-2 no-wrap tiss-barra-localizar') as barra_localizar:
-            campo_localizar = ui.input('Localizar').classes('flex-grow').props('dense outlined')
-            campo_substituir = ui.input('Substituir por').classes('flex-grow').props('dense outlined')
-            resultado_busca = ui.label('').classes('text-xs text-gray-500 whitespace-nowrap')
-            botao_loc = ui.button(icon='search').props('flat dense round').tooltip('Contar ocorrências')
-            botao_sub_um = ui.button(icon='swap_horiz').props('flat dense round').tooltip('Substituir a primeira ocorrência')
-            botao_sub_todos = ui.button('Substituir todos').props('flat dense')
-            botao_fechar_localizar = ui.button(icon='close').props('flat dense round').tooltip('Fechar')
-        barra_localizar.visible = False
+    # ---------------- Painel de Mensagens ----------------
+    # Estilo checklist (como um validador de desktop): primeiro o que
+    # aconteceu ao carregar o arquivo, depois cada correção realmente
+    # aplicada (reaproveitando os mesmos textos que processar_xml_tiss
+    # já gera — nenhuma regra nova aqui, só a apresentação), e por fim
+    # um resumo do estado final. Retrátil (cabeçalho sempre visível com a
+    # validade do XML) e atualizado ao vivo conforme o XML é editado.
+    aud = resultado.get('auditoria') or {}
+    categorias_com_alteracao = [(c, t, aud.get(c)) for c, t in TITULOS_AMIGAVEIS_AUDITORIA.items()
+                                 if c != 'erros' and aud.get(c)]
+    total_correcoes = sum(len(itens) for _, _, itens in categorias_com_alteracao)
+    senha_encontrada = _extrair_primeiro(_PADRAO_SENHA, ed['texto_original'])
+    carteira_encontrada = _extrair_primeiro(_PADRAO_CARTEIRA, ed['texto_original'])
 
-        def alternar_barra_localizar(_=None):
-            barra_localizar.visible = not barra_localizar.visible
-            if barra_localizar.visible:
-                campo_localizar.run_method('focus')
-        botao_localizar_toggle.on('click', alternar_barra_localizar)
-        botao_fechar_localizar.on('click', lambda: setattr(barra_localizar, 'visible', False))
+    with ui.expansion(value=True).props('dense switch-toggle-side expand-icon-toggle').classes('tiss-mensagens w-full') as expansao_mensagens:
+        with expansao_mensagens.add_slot('header'):
+            with ui.row().classes('items-center no-wrap w-full gap-3'):
+                ui.label('Mensagens').classes('tiss-mensagens-titulo')
+                mensagem_validade = ui.html()
+                ui.space()
+                if total_correcoes:
+                    ui.badge(f'{total_correcoes} correção(ões)', color='primary').props('outline')
+                if aud.get('erros'):
+                    ui.badge(f"{len(aud['erros'])} aviso(s)", color='warning')
 
-        # ---------------- Painel de Mensagens ----------------
-        # Estilo checklist (como um validador de desktop): primeiro o que
-        # aconteceu ao carregar o arquivo, depois cada correção realmente
-        # aplicada (reaproveitando os mesmos textos que processar_xml_tiss
-        # já gera — nenhuma regra nova aqui, só a apresentação), e por fim
-        # um resumo do estado final. Sempre visível (não é um toast que
-        # some sozinho) e atualizado ao vivo conforme o XML é editado.
-        aud = resultado.get('auditoria') or {}
-        categorias_com_alteracao = [(c, t, aud.get(c)) for c, t in TITULOS_AMIGAVEIS_AUDITORIA.items()
-                                     if c != 'erros' and aud.get(c)]
-        total_correcoes = sum(len(itens) for _, _, itens in categorias_com_alteracao)
-        senha_encontrada = _extrair_primeiro(_PADRAO_SENHA, ed['texto_original'])
-        carteira_encontrada = _extrair_primeiro(_PADRAO_CARTEIRA, ed['texto_original'])
-
-        with ui.column().classes('w-full gap-1 tiss-mensagens'):
-            ui.label('MENSAGENS').classes('tiss-mensagens-titulo')
-            mensagem_validade = ui.html()
-
-            with ui.row().classes('items-center gap-2'):
-                ui.icon('check_circle', color='positive').classes('text-base')
+        with ui.column().classes('tiss-mensagens-corpo w-full'):
+            with ui.row().classes('linha'):
+                ui.icon('check_circle', color='positive')
                 ui.label(f'Arquivo carregado com sucesso: {nome_arquivo}').classes('text-sm')
-            with ui.row().classes('items-center gap-2'):
-                ui.icon('check_circle', color='positive').classes('text-base')
+            with ui.row().classes('linha'):
+                ui.icon('check_circle', color='positive')
                 ui.label('Processamento automático concluído.').classes('text-sm')
 
             if total_correcoes:
-                ui.label(f'Correções realizadas ({total_correcoes})').classes('font-bold text-sm mt-2')
+                ui.label(f'Correções realizadas ({total_correcoes})').classes('font-bold text-sm mt-1')
                 for chave_cat, titulo_cat, itens_cat in categorias_com_alteracao:
-                    with ui.row().classes('items-center gap-2'):
-                        ui.icon('check_circle', color='positive').classes('text-base')
+                    with ui.row().classes('linha'):
+                        ui.icon('check_circle', color='positive')
                         ui.label(titulo_cat).classes('text-sm font-semibold')
                         ui.label(f'{len(itens_cat)} item(ns)').classes('text-xs text-gray-500')
-                    with ui.column().classes('gap-0 ml-7'):
+                    with ui.column().classes('gap-0 ml-6'):
                         for item in itens_cat:
                             ui.label(f'• {item}').classes('text-xs text-gray-600')
             else:
-                with ui.row().classes('items-center gap-2 mt-1'):
-                    ui.icon('check_circle', color='positive').classes('text-base')
+                with ui.row().classes('linha mt-1'):
+                    ui.icon('check_circle', color='positive')
                     ui.label('Nenhuma correção necessária.').classes('text-sm')
 
             if senha_encontrada is not None or carteira_encontrada is not None:
-                ui.label('Informações identificadas').classes('font-bold text-sm mt-2')
+                ui.label('Informações identificadas').classes('font-bold text-sm mt-1')
                 if senha_encontrada is not None:
-                    with ui.row().classes('items-center gap-2'):
-                        ui.icon('info', color='primary').classes('text-base')
+                    with ui.row().classes('linha'):
+                        ui.icon('info', color='primary')
                         ui.label('Tag <ans:senha> identificada').classes('text-sm')
                         ui.label(f'Valor: {senha_encontrada}').classes('text-xs text-gray-500')
                 if carteira_encontrada is not None:
-                    with ui.row().classes('items-center gap-2'):
-                        ui.icon('info', color='primary').classes('text-base')
+                    with ui.row().classes('linha'):
+                        ui.icon('info', color='primary')
                         ui.label('Tag <ans:numeroCarteira> identificada').classes('text-sm')
                         ui.label(f'Valor: {carteira_encontrada}').classes('text-xs text-gray-500')
 
             if aud.get('erros'):
-                ui.label(f"⚠️ {len(aud['erros'])} aviso(s)/erro(s) pontual(is) durante o processamento").classes('text-sm font-semibold text-amber-700 mt-2')
-                with ui.column().classes('gap-0 ml-7'):
+                with ui.row().classes('linha mt-1'):
+                    ui.icon('warning', color='warning')
+                    ui.label(f"{len(aud['erros'])} aviso(s)/erro(s) pontual(is) durante o processamento").classes('text-sm font-semibold text-amber-700')
+                with ui.column().classes('gap-0 ml-6'):
                     for item in aud['erros']:
                         ui.label(f'• {item}').classes('text-xs text-amber-700')
 
-            with ui.row().classes('items-center gap-2 mt-2'):
+            with ui.row().classes('linha mt-1'):
                 if aud.get('erros'):
-                    ui.icon('warning', color='warning').classes('text-base')
+                    ui.icon('warning', color='warning')
                     ui.label('Processamento concluído com avisos — confira os itens acima.').classes('text-sm font-semibold')
                 else:
-                    ui.icon('check_circle', color='positive').classes('text-base')
+                    ui.icon('check_circle', color='positive')
                     ui.label('Processamento concluído com sucesso.').classes('text-sm font-semibold')
-
-        with ui.row().classes('w-full items-center tiss-statusbar gap-6'):
-            status_arquivo = ui.label()
-            status_linhas = ui.label()
-            status_alteracoes = ui.label()
-            status_hash = ui.html()
-
-
     # ---------------- Atualização da interface ----------------
     def atualizar_painel_diff(alterado):
         """Recalcula e redesenha o painel 'ALTERAÇÕES'. Isolado à parte porque
@@ -1926,7 +2053,7 @@ def construir_editor_xml(estado, editores, resultado):
         alteracoes = calcular_diff_alteracoes(ed['texto_base'], ed['texto_atual']) if alterado else []
         with painel_alteracoes:
             if alteracoes:
-                ui.label(f"🟡 {len(alteracoes)} alteração(ões)").classes('text-sm mb-2')
+                ui.label(f"{len(alteracoes)} alteração(ões)").classes('text-sm mb-2')
                 for alt in alteracoes[:60]:
                     campo = alt['campo'] or '(trecho alterado)'
                     ui.html(f"""
@@ -1938,13 +2065,13 @@ def construir_editor_xml(estado, editores, resultado):
                     """)
             else:
                 ui.label('Nenhuma alteração realizada.').classes('text-sm text-gray-500')
-        status_alteracoes.text = (f"⚠ {len(alteracoes)} alteração(ões) não salva(s)" if alterado
-                                   else ("💾 Alterações salvas" if ed['salvo_alguma_vez'] else "Sem alterações"))
-        status_alteracoes.classes(replace='text-amber-700 font-semibold' if alterado else 'text-gray-600')
-        # A faixa "Alterações manuais pendentes" só se abre sozinha quando há
-        # de fato algo para mostrar — assim ela não ocupa espaço à toa logo
+        status_alteracoes.text = (f"{len(alteracoes)} alteração(ões) não salva(s)" if alterado
+                                   else ("Alterações salvas" if ed['salvo_alguma_vez'] else "Sem alterações"))
+        status_alteracoes.classes(replace='tiss-st-sujo' if alterado else ('tiss-st-salvo' if ed['salvo_alguma_vez'] else 'tiss-st'))
+        # O painel "Alterações manuais pendentes" só aparece quando há de
+        # fato algo para mostrar — assim ele não ocupa espaço à toa logo
         # depois de abrir um arquivo (quando ainda não há nenhuma edição).
-        expansao_alteracoes.value = bool(alteracoes)
+        expansao_alteracoes.set_visibility(bool(alteracoes))
 
     def _sincronizar_campos_topo():
         """Lê senha/carteira do texto ATUAL do editor e reflete nos campos do
@@ -1971,17 +2098,18 @@ def construir_editor_xml(estado, editores, resultado):
 
         try:
             ET.fromstring(ed['texto_atual'].encode('ISO-8859-1'))
-            mensagem_validade.content = '<span class="tiss-msg-ok">✔ Arquivo válido — nenhum erro de estrutura encontrado.</span>'
+            mensagem_validade.content = '<span class="tiss-msg-ok">Arquivo válido — nenhum erro de estrutura encontrado.</span>'
         except Exception as e:
-            mensagem_validade.content = f'<span class="tiss-msg-erro">✕ XML inválido — {html.escape(str(e))}</span>'
+            mensagem_validade.content = f'<span class="tiss-msg-erro">XML inválido — {html.escape(str(e))}</span>'
 
-        status_arquivo.text = html.escape(nome_arquivo)
         status_linhas.text = f"{len(ed['texto_atual'].splitlines())} linhas"
 
         hash_dif = ed['hash_atual'] != ed['hash_original']
-        cor = 'color:#b45309;font-weight:600' if hash_dif else 'color:#374151'
-        status_hash.content = (f"Hash original: <code>{ed['hash_original'] or '—'}</code> &nbsp;|&nbsp; "
-                                f"<span style='{cor}'>Hash atual: <code>{ed['hash_atual'] or '—'}</code></span>")
+        h_orig = ed['hash_original'] or '—'
+        h_atual = ed['hash_atual'] or '—'
+        classe_dif = 'dif' if hash_dif else ''
+        status_hash.content = (f"Hash original <code title='{h_orig}'>{h_orig}</code><span class='sep'></span>"
+                                f"Hash atual <code class='{classe_dif}' title='{h_atual}'>{h_atual}</code>")
 
         _sincronizar_campos_topo()
 
@@ -2044,7 +2172,7 @@ def construir_editor_xml(estado, editores, resultado):
         novos_bytes, erro = validar_e_recalcular_xml_editado(ed['texto_atual'])
         if erro:
             ed['erro_validacao'] = erro
-            ui.notify(f'❌ {erro}', type='negative', multi_line=True, close_button=True)
+            ui.notify(f'{erro}', type='negative', multi_line=True, close_button=True)
             return
         novo_texto_final = novos_bytes.decode('ISO-8859-1')
         definir_conteudo(novo_texto_final, empilhar_undo=False)
@@ -2071,11 +2199,11 @@ def construir_editor_xml(estado, editores, resultado):
 
         if baixados_junto:
             ui.notify(
-                f"✅ Hash recalculado. Este arquivo foi fragmentado — baixado junto com: {', '.join(baixados_junto)}.",
+                f"Hash recalculado. Este arquivo foi fragmentado — baixado junto com: {', '.join(baixados_junto)}.",
                 type='positive', multi_line=True,
             )
         else:
-            ui.notify('✅ Hash recalculado e download iniciado.', type='positive')
+            ui.notify('Hash recalculado e download iniciado.', type='positive')
     botao_baixar.on('click', baixar)
 
     def desfazer(_=None):
@@ -2125,9 +2253,9 @@ def construir_editor_xml(estado, editores, resultado):
         try:
             ed['texto_atual'].encode('ISO-8859-1')
             ET.fromstring(ed['texto_atual'].encode('ISO-8859-1'))
-            ui.notify('✓ XML válido', type='positive')
+            ui.notify('XML válido', type='positive')
         except Exception as e:
-            ui.notify(f'✕ XML inválido: {e}', type='negative')
+            ui.notify(f'XML inválido: {e}', type='negative')
     botao_validar.on('click', validar)
 
     def copiar(_=None):
