@@ -1438,6 +1438,8 @@ ui.add_head_html("""
     .tiss-abas .q-tab { min-height: 34px; padding: 0 14px; font-size: 12.5px; color: var(--tiss-texto-suave); }
     .tiss-abas .q-tab:hover { color: var(--tiss-texto-forte); }
     .tiss-abas .q-tab--active { background-color: var(--tiss-accent-suave); }
+    .tiss-aba-fechar { margin-left: 8px; margin-right: -6px; opacity: .55; }
+    .tiss-aba-fechar:hover { opacity: 1; color: var(--tiss-erro); }
     .tiss-abas .q-tab__label { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .tiss-campo { width: 150px; flex: 0 1 150px; min-width: 100px; }
     .tiss-campo-senha { width: 150px; flex: 0 1 150px; }
@@ -1867,7 +1869,7 @@ def painel_resultados(estado, editores):
     sucesso = [r for r in resultados if not r.get('falha_total')]
     falhas = [r for r in resultados if r.get('falha_total')]
 
-    with ui.column().classes('tiss-workspace'):
+    with ui.column().classes('tiss-workspace') as area_trabalho:
         if falhas:
             with ui.expansion(f'{len(falhas)} arquivo(s) com falha total', icon='error', value=True).props('dense').classes('w-full tiss-mensagens'):
                 with ui.column().classes('tiss-mensagens-corpo w-full'):
@@ -1887,6 +1889,39 @@ def painel_resultados(estado, editores):
             estado['arquivo_selecionado'] = e.value
             painel_resultados.refresh()
 
+        # FECHAR UM ARQUIVO (botão "x" de cada aba). Remove só aquele arquivo da
+        # lista e descarta o editor dele; os demais continuam abertos. Se ele
+        # tiver alterações não salvas, pede confirmação antes de fechar.
+        def fechar_arquivo(nome_f):
+            def efetivar():
+                restante = [n for n in nomes if n != nome_f]
+                if estado['arquivo_selecionado'] == nome_f:
+                    pos = nomes.index(nome_f)
+                    estado['arquivo_selecionado'] = restante[min(pos, len(restante) - 1)] if restante else None
+                estado['resultados_lote'] = [r for r in estado['resultados_lote'] if r['nome'] != nome_f]
+                for chave_ed in [c for c in editores if c[1] == nome_f]:
+                    del editores[chave_ed]
+                painel_resultados.refresh()
+
+            ed_f = editores.get((estado['lote_id'], nome_f))
+            if ed_f is None or ed_f['texto_atual'] == ed_f['texto_base']:
+                efetivar()
+                return
+
+            def confirmar():
+                dialogo_fechar.close()
+                efetivar()
+
+            with area_trabalho:
+                with ui.dialog() as dialogo_fechar, ui.card():
+                    ui.label('Fechar arquivo com alterações não salvas?').classes('text-base font-bold')
+                    ui.label(f'"{nome_f}" tem edições que ainda não foram salvas. '
+                              'Fechar agora descarta essas edições.').classes('text-sm text-gray-600')
+                    with ui.row().classes('w-full justify-end gap-2 mt-2'):
+                        ui.button('Cancelar', on_click=dialogo_fechar.close).props('flat')
+                        ui.button('Fechar mesmo assim', color='negative', on_click=confirmar)
+            dialogo_fechar.open()
+
         # Linha de abas: uma aba por arquivo (clique para trocar). Com muitos
         # arquivos a linha rola para o lado. O botão de ZIP fica no fim dela.
         with ui.row().classes('tiss-abasbar w-full'):
@@ -1894,7 +1929,11 @@ def painel_resultados(estado, editores):
                     .props('dense no-caps align=left inline-label active-color=primary indicator-color=primary') \
                     .classes('tiss-abas'):
                 for nome_aba in nomes:
-                    aba = ui.tab(nome_aba, label=nome_aba)
+                    with ui.tab(nome_aba, label=nome_aba) as aba:
+                        # 'click.stop': o clique no "x" não pode também selecionar a aba.
+                        ui.button(icon='close').props('flat dense round size=xs') \
+                            .classes('tiss-aba-fechar').tooltip('Fechar este arquivo') \
+                            .on('click.stop', lambda e, n=nome_aba: fechar_arquivo(n))
                     if len(nome_aba) > 28:
                         aba.tooltip(nome_aba)
 
