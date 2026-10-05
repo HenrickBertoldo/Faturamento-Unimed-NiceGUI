@@ -1182,6 +1182,43 @@ def _normalizar_quebras_linha(texto):
     '\\r\\n' é reaplicado na hora de gerar o arquivo final (download)."""
     return texto.replace('\r\n', '\n').replace('\r', '\n')
 
+def _notificar(mensagem, **kwargs):
+    """Notificação (toast) no canto superior direito, abaixo da barra de
+    controle — assim ela não cobre o painel de Mensagens nem a barra de status."""
+    kwargs.setdefault('position', 'top-right')
+    return ui.notify(mensagem, **kwargs)
+
+
+def _hash_curto(h):
+    """Versão abreviada do hash para a barra de status (o valor completo fica
+    no tooltip e é o que vai para a área de transferência ao clicar)."""
+    h = h or '—'
+    return f"{h[:8]}…{h[-6:]}" if len(h) > 18 else h
+
+
+def _recorte_diff(antes, depois, contexto=22, maximo=120):
+    """Reduz um par (antes, depois) ao trecho que realmente mudou, com um
+    pouco de contexto ao redor, para o painel de alterações não despejar
+    dezenas de linhas de XML. Só apresentação: o diff em si vem de
+    calcular_diff_alteracoes()."""
+    n = min(len(antes), len(depois))
+    i = 0
+    while i < n and antes[i] == depois[i]:
+        i += 1
+    j = 0
+    while j < n - i and antes[len(antes) - 1 - j] == depois[len(depois) - 1 - j]:
+        j += 1
+    esq = antes[max(0, i - contexto):i]
+    dir_ = antes[len(antes) - j:len(antes) - j + contexto] if j else ''
+    meio_a = antes[i:len(antes) - j]
+    meio_d = depois[i:len(depois) - j]
+
+    def cortar(t):
+        return t if len(t) <= maximo else t[:maximo] + '…'
+    return (('…' if i > contexto else '') + esq, cortar(meio_a), cortar(meio_d),
+            dir_ + ('…' if j > contexto else ''))
+
+
 def _extrair_primeiro(padrao, texto):
     """Devolve o conteúdo do primeiro elemento que casar com o padrão, ou
     None se ele não existir no texto (arquivo sem esse campo, ex.: uma guia
@@ -1403,6 +1440,8 @@ ui.add_head_html("""
     .tiss-abas .q-tab--active { background-color: var(--tiss-accent-suave); }
     .tiss-abas .q-tab__label { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .tiss-campo { width: 150px; flex: 0 1 150px; min-width: 100px; }
+    .tiss-campo-senha { width: 150px; flex: 0 1 150px; }
+    .tiss-campo-carteira { width: 235px; flex: 0 1 235px; min-width: 170px; }
     .tiss-campo input { font-family: var(--tiss-mono); font-size: 12.5px; }
     .tiss-controlbar .q-field--dense .q-field__control,
     .tiss-controlbar .q-field--dense .q-field__marginal { height: 34px; }
@@ -1476,11 +1515,6 @@ ui.add_head_html("""
         content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
         background: currentColor; margin-right: 6px; vertical-align: 1px;
     }
-    .tiss-hash {
-        margin-left: auto; min-width: 0; flex: 0 1 auto;
-        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-        color: var(--tiss-texto-suave); font-size: 11.5px;
-    }
     .tiss-hash code { font-family: var(--tiss-mono); font-size: 11.5px; color: var(--tiss-texto); background: none; padding: 0; }
     .tiss-hash code.dif { color: var(--tiss-aviso); font-weight: 600; }
     .tiss-hash .sep { display: inline-block; width: 1px; height: 11px; background: var(--tiss-borda); margin: 0 10px; vertical-align: -1px; }
@@ -1502,6 +1536,23 @@ ui.add_head_html("""
         content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
         background: currentColor; margin-right: 6px; vertical-align: 1px;
     }
+
+    /* Notificações abaixo das barras superiores (não cobrem Mensagens/status) */
+    .q-notifications__list--top { top: 138px !important; }
+
+    /* Painel de alterações: só o trecho que mudou */
+    .diff-trecho { font-family: var(--tiss-mono); font-size: 11px; line-height: 1.45; word-break: break-all; color: var(--tiss-texto-suave); }
+    .diff-trecho .rot { display: inline-block; width: 38px; font-family: inherit; font-weight: 700; opacity: .8; }
+    .diff-trecho .del { background: rgba(220, 38, 38, .16); color: var(--tiss-texto-forte); border-radius: 3px; padding: 0 2px; }
+    .diff-trecho .add { background: rgba(22, 163, 74, .18); color: var(--tiss-texto-forte); border-radius: 3px; padding: 0 2px; }
+    .diff-trecho .vazio { font-style: italic; opacity: .7; }
+
+    /* Hash abreviado, clicável para copiar */
+    .tiss-hash { margin-left: auto; gap: 6px !important; flex: 0 0 auto; flex-wrap: nowrap !important; align-items: center !important; font-size: 11.5px; }
+    .tiss-hash-rot { color: var(--tiss-texto-suave); }
+    .tiss-hash-val { font-family: var(--tiss-mono); color: var(--tiss-texto); cursor: pointer; border-radius: 4px; padding: 0 3px; }
+    .tiss-hash-val:hover { background: var(--tiss-accent-suave); color: var(--tiss-accent); }
+    .tiss-hash-val.dif { color: var(--tiss-aviso); font-weight: 600; }
 
     /* Estado vazio (nenhum arquivo carregado) */
     .tiss-vazio { flex: 1 1 0; color: var(--tiss-texto-suave); gap: 4px !important; }
@@ -1539,6 +1590,18 @@ ui.add_head_html("""
                 e.preventDefault();
                 e.stopPropagation();
                 alvo.click();
+            }
+        }
+        // Esc: fecha a barra "Localizar e substituir" quando ela estiver aberta.
+        // Com a barra fechada, o Esc segue o comportamento normal (menus,
+        // diálogos etc.).
+        if (e.key === 'Escape' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+            var barraLocalizar = document.getElementById('tiss-barra-localizar');
+            var fecharLocalizar = document.getElementById('tiss-fechar-localizar');
+            if (barraLocalizar && fecharLocalizar && barraLocalizar.offsetParent !== null) {
+                e.preventDefault();
+                e.stopPropagation();
+                fecharLocalizar.click();
             }
         }
         // Ctrl+S (ou Cmd+S): aciona o mesmo botão "Baixar XML" (valida,
@@ -1621,13 +1684,13 @@ def pagina_principal():
         estado['avisos_sheets'] = novos_avisos
         painel_avisos_sheets.refresh()
         if novos_avisos:
-            ui.notify(
+            _notificar(
                 f"Regras recarregadas com {len(novos_avisos)} aviso(s) — veja o ícone de aviso na barra superior. "
                 "Lotes já processados NÃO são reprocessados automaticamente.",
                 type='warning', multi_line=True,
             )
         else:
-            ui.notify(
+            _notificar(
                 "Regras recarregadas da planilha com sucesso. Lotes já processados NÃO são "
                 "reprocessados automaticamente — reenvie os arquivos se precisar aplicar a mudança.",
                 type='positive', multi_line=True,
@@ -1762,7 +1825,7 @@ def construir_aba_processamento(estado, editores, barra_app, corpo):
                 estado['arquivo_selecionado'] = None
                 estado['lote_id'] += 1
                 painel_resultados.refresh()
-                ui.notify('Lista de arquivos processados limpa.', type='info')
+                _notificar('Lista de arquivos processados limpa.', type='info')
                 dialogo_limpar.close()
 
             tem_edicao_pendente = any(
@@ -1982,7 +2045,7 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
 
     def _copiar_campo(valor):
         ui.run_javascript(f"navigator.clipboard.writeText({json.dumps(valor or '')})")
-        ui.notify('Copiado.', type='positive')
+        _notificar('Copiado.', type='positive')
 
     def ao_editar_campo_topo(padrao, ignorar_chave, novo_valor):
         if _campos_topo[ignorar_chave]:
@@ -1991,7 +2054,7 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
             _campos_topo[ignorar_chave] = False
             return
         if _extrair_primeiro(padrao, ed['texto_atual']) is None:
-            ui.notify('Este arquivo não tem essa tag — nada para atualizar.', type='warning')
+            _notificar('Este arquivo não tem essa tag — nada para atualizar.', type='warning')
             return
         novo_texto = _substituir_primeiro(padrao, ed['texto_atual'], novo_valor)
         if novo_texto != ed['texto_atual']:
@@ -2001,12 +2064,12 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
     # controle criada em painel_resultados (mesma linha do seletor de arquivo).
     with barra_controle:
         with ui.input(label='Senha', value=_extrair_primeiro(_PADRAO_SENHA, ed['texto_atual']) or '') \
-                .props('dense outlined').classes('tiss-campo') as campo_senha:
+                .props('dense outlined').classes('tiss-campo tiss-campo-senha') as campo_senha:
             with campo_senha.add_slot('append'):
                 ui.button(icon='content_copy').props('flat dense round size=xs') \
                     .tooltip('Copiar').on('click', lambda: _copiar_campo(campo_senha.value))
         with ui.input(label='Número da Carteira', value=_extrair_primeiro(_PADRAO_CARTEIRA, ed['texto_atual']) or '') \
-                .props('dense outlined').classes('tiss-campo') as campo_carteira:
+                .props('dense outlined').classes('tiss-campo tiss-campo-carteira') as campo_carteira:
             with campo_carteira.add_slot('append'):
                 ui.button(icon='content_copy').props('flat dense round size=xs') \
                     .tooltip('Copiar').on('click', lambda: _copiar_campo(campo_carteira.value))
@@ -2028,7 +2091,7 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
             .classes('tiss-btn-baixar').tooltip('Validar, recalcular hash e baixar XML (Ctrl+S)')
 
     # Barra de Localizar/Substituir (oculta até o botão de busca ser clicado)
-    with ui.row().classes('w-full items-center gap-2 no-wrap tiss-barra-localizar') as barra_localizar:
+    with ui.row().classes('w-full items-center gap-2 no-wrap tiss-barra-localizar').props('id=tiss-barra-localizar') as barra_localizar:
         campo_localizar = ui.input('Localizar').classes('flex-grow').props('dense outlined')
         campo_substituir = ui.input('Substituir por').classes('flex-grow').props('dense outlined')
         resultado_busca = ui.label('').classes('text-xs text-gray-500 whitespace-nowrap')
@@ -2037,7 +2100,7 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
         botao_prox = ui.button(icon='keyboard_arrow_down').props('flat dense round').tooltip('Próxima ocorrência (Enter)')
         botao_sub_um = ui.button(icon='swap_horiz').props('flat dense round').tooltip('Substituir a primeira ocorrência')
         botao_sub_todos = ui.button('Substituir todos').props('flat dense no-caps')
-        botao_fechar_localizar = ui.button(icon='close').props('flat dense round').tooltip('Fechar')
+        botao_fechar_localizar = ui.button(icon='close').props('flat dense round id=tiss-fechar-localizar').tooltip('Fechar (Esc)')
     barra_localizar.visible = False
 
     def alternar_barra_localizar(_=None):
@@ -2054,7 +2117,12 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
         campo_localizar.run_method('focus')
         campo_localizar.run_method('select')
     ui.button(on_click=abrir_barra_localizar).props('id=tiss-atalho-localizar').style('display: none')
-    botao_fechar_localizar.on('click', lambda: setattr(barra_localizar, 'visible', False))
+    # Fecha a barra (botão X ou tecla Esc) e devolve o foco ao editor, para
+    # continuar digitando/navegando no XML sem precisar clicar nele de novo.
+    def fechar_barra_localizar(_=None):
+        barra_localizar.visible = False
+        ui.run_javascript(f"const ed = getElement({editor.id}).editor; if (ed) ed.focus();")
+    botao_fechar_localizar.on('click', fechar_barra_localizar)
 
     # O editor ocupa toda a largura e toda a altura disponível. O painel de
     # alterações manuais pendentes só aparece (à direita) quando existe uma
@@ -2092,7 +2160,18 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
         label_arquivo = ui.label(nome_arquivo).classes('tiss-file-name')
         status_linhas = ui.label().classes('tiss-st')
         status_alteracoes = ui.label()
-        status_hash = ui.html().classes('tiss-hash')
+        with ui.row().classes('tiss-hash'):
+            ui.label('Hash original').classes('tiss-hash-rot')
+            hash_orig_lbl = ui.label().classes('tiss-hash-val')
+            with hash_orig_lbl:
+                tip_hash_orig = ui.tooltip('')
+            ui.element('span').classes('sep')
+            ui.label('Hash atual').classes('tiss-hash-rot')
+            hash_atual_lbl = ui.label().classes('tiss-hash-val')
+            with hash_atual_lbl:
+                tip_hash_atual = ui.tooltip('')
+        hash_orig_lbl.on('click', lambda: _copiar_campo(ed['hash_original']))
+        hash_atual_lbl.on('click', lambda: _copiar_campo(ed['hash_atual']))
 
     # ---------------- Painel de Mensagens ----------------
     # Estilo checklist (como um validador de desktop): primeiro o que
@@ -2108,11 +2187,15 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
     senha_encontrada = _extrair_primeiro(_PADRAO_SENHA, ed['texto_original'])
     carteira_encontrada = _extrair_primeiro(_PADRAO_CARTEIRA, ed['texto_original'])
 
-    with ui.expansion(value=True).props('dense switch-toggle-side expand-icon-toggle').classes('tiss-mensagens w-full') as expansao_mensagens:
+    _msg_aberto = estado.get('mensagens_aberto')  # None = ainda não decidido (usa a altura da janela)
+    with ui.expansion(value=True if _msg_aberto is None else _msg_aberto).props('dense switch-toggle-side expand-icon-toggle').classes('tiss-mensagens w-full') as expansao_mensagens:
         with expansao_mensagens.add_slot('header'):
             with ui.row().classes('items-center no-wrap w-full gap-3'):
                 ui.label('Mensagens').classes('tiss-mensagens-titulo')
                 mensagem_validade = ui.html()
+                botao_ir_erro = ui.button('Ir para a linha', icon='my_location') \
+                    .props('flat dense no-caps size=sm color=negative')
+                botao_ir_erro.set_visibility(False)
                 ui.space()
                 if total_correcoes:
                     ui.badge(f'{total_correcoes} correção(ões)', color='primary').props('outline')
@@ -2170,6 +2253,23 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
                 else:
                     ui.icon('check_circle', color='positive')
                     ui.label('Processamento concluído com sucesso.').classes('text-sm font-semibold')
+    # O painel de Mensagens lembra se o usuário o abriu/fechou. Na primeira
+    # vez, em janelas baixas (< 820 px) ele já começa recolhido, mostrando só o
+    # resumo no cabeçalho, para dar o máximo de espaço ao editor.
+    expansao_mensagens.on_value_change(lambda e: estado.__setitem__('mensagens_aberto', e.value))
+
+    async def _ajustar_mensagens_pela_altura():
+        try:
+            altura = await ui.run_javascript('window.innerHeight', timeout=3)
+        except Exception:
+            return
+        if altura and altura < 820:
+            expansao_mensagens.value = False
+        else:
+            estado['mensagens_aberto'] = True
+    if _msg_aberto is None:
+        ui.timer(0.2, _ajustar_mensagens_pela_altura, once=True)
+
     # ---------------- Atualização da interface ----------------
     def atualizar_painel_diff(alterado):
         """Recalcula e redesenha o painel 'ALTERAÇÕES'. Isolado à parte porque
@@ -2187,11 +2287,16 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
                 ui.label(f"{len(alteracoes)} alteração(ões)").classes('text-sm mb-2')
                 for alt in alteracoes[:60]:
                     campo = alt['campo'] or '(trecho alterado)'
+                    ctx_e, meio_a, meio_d, ctx_d = _recorte_diff(alt['antes'], alt['depois'])
+                    e_ctx, d_ctx = html.escape(ctx_e), html.escape(ctx_d)
+                    txt_a = html.escape(meio_a) if meio_a else '<span class="vazio">(nada)</span>'
+                    txt_d = html.escape(meio_d) if meio_d else '<span class="vazio">(removido)</span>'
                     ui.html(f"""
                         <div class="diff-item">
                             <div class="diff-linha">Linha {alt['linha']}</div>
                             <div class="diff-campo">{html.escape(campo)}</div>
-                            <div class="diff-valores">{html.escape(alt['antes'])} → {html.escape(alt['depois'])}</div>
+                            <div class="diff-trecho"><span class="rot">antes</span>{e_ctx}<span class="del">{txt_a}</span>{d_ctx}</div>
+                            <div class="diff-trecho"><span class="rot">depois</span>{e_ctx}<span class="add">{txt_d}</span>{d_ctx}</div>
                         </div>
                     """)
             else:
@@ -2219,6 +2324,25 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
             _campos_topo['ignorar_proximo_carteira'] = True
             campo_carteira.set_value(carteira_atual)
 
+    _erro_pos = {'linha': None, 'coluna': 0}
+
+    def ir_para_erro(_=None):
+        """Leva o cursor do editor até a linha/coluna do erro de XML (só move o
+        cursor e rola; não altera o texto)."""
+        if not _erro_pos['linha']:
+            return
+        ui.run_javascript(f"""
+            const ed = getElement({editor.id}).editor;
+            if (ed) {{
+                const n = Math.min(Math.max(1, {_erro_pos['linha']}), ed.state.doc.lines);
+                const ln = ed.state.doc.line(n);
+                const pos = Math.min(ln.from + {_erro_pos['coluna']}, ln.to);
+                ed.dispatch({{ selection: {{ anchor: pos }}, scrollIntoView: true }});
+                ed.focus();
+            }}
+        """)
+    botao_ir_erro.on('click.stop', ir_para_erro)
+
     def atualizar_interface(recalcular_diff=True):
         alterado = ed['texto_atual'] != ed['texto_base']
         label_arquivo.text = f"{nome_arquivo} *" if alterado else nome_arquivo
@@ -2232,15 +2356,31 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
             mensagem_validade.content = '<span class="tiss-msg-ok">Arquivo válido — nenhum erro de estrutura encontrado.</span>'
         except Exception as e:
             mensagem_validade.content = f'<span class="tiss-msg-erro">XML inválido — {html.escape(str(e))}</span>'
+            # Posição do erro (ex.: "line 21, column 41") para o botão "Ir para a linha".
+            achados = re.findall(r'line (\d+)(?:, column (\d+))?', str(e))
+            if achados:
+                lin, col = achados[-1]
+                _erro_pos['linha'] = int(lin)
+                _erro_pos['coluna'] = int(col) if col else 0
+                botao_ir_erro.text = f"Ir para a linha {lin}"
+                botao_ir_erro.set_visibility(True)
+            else:
+                _erro_pos['linha'] = None
+                botao_ir_erro.set_visibility(False)
+        else:
+            _erro_pos['linha'] = None
+            botao_ir_erro.set_visibility(False)
 
         status_linhas.text = f"{len(ed['texto_atual'].splitlines())} linhas"
 
         hash_dif = ed['hash_atual'] != ed['hash_original']
         h_orig = ed['hash_original'] or '—'
         h_atual = ed['hash_atual'] or '—'
-        classe_dif = 'dif' if hash_dif else ''
-        status_hash.content = (f"Hash original <code title='{h_orig}'>{h_orig}</code><span class='sep'></span>"
-                                f"Hash atual <code class='{classe_dif}' title='{h_atual}'>{h_atual}</code>")
+        hash_orig_lbl.text = _hash_curto(h_orig)
+        hash_atual_lbl.text = _hash_curto(h_atual)
+        hash_atual_lbl.classes(replace='tiss-hash-val dif' if hash_dif else 'tiss-hash-val')
+        tip_hash_orig.text = f"{h_orig} — clique para copiar"
+        tip_hash_atual.text = f"{h_atual} — clique para copiar"
 
         _sincronizar_campos_topo()
 
@@ -2303,7 +2443,7 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
         novos_bytes, erro = validar_e_recalcular_xml_editado(ed['texto_atual'])
         if erro:
             ed['erro_validacao'] = erro
-            ui.notify(f'{erro}', type='negative', multi_line=True, close_button=True)
+            _notificar(f'{erro}', type='negative', multi_line=True, close_button=True)
             return
         # O texto do editor/estado fica só com \n (ver _normalizar_quebras_linha);
         # os bytes do arquivo para download (novos_bytes) mantêm as quebras originais.
@@ -2331,12 +2471,12 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
                 baixados_junto.append(r_rel['nome'])
 
         if baixados_junto:
-            ui.notify(
+            _notificar(
                 f"Hash recalculado. Este arquivo foi fragmentado — baixado junto com: {', '.join(baixados_junto)}.",
                 type='positive', multi_line=True,
             )
         else:
-            ui.notify('Hash recalculado e download iniciado.', type='positive')
+            _notificar('Hash recalculado e download iniciado.', type='positive')
     botao_baixar.on('click', baixar)
 
     def desfazer(_=None):
@@ -2362,13 +2502,13 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
             definir_conteudo(ed['texto_original'])
             ed['historico'].clear()
             ed['futuro'].clear()
-            ui.notify('XML recarregado ao estado processado automaticamente.', type='info')
+            _notificar('XML recarregado ao estado processado automaticamente.', type='info')
             dialogo_recarregar.close()
 
         # Só interrompe com uma confirmação se houver algo de fato a perder;
         # se o texto já está igual ao original, recarrega direto sem incomodar.
         if ed['texto_atual'] == ed['texto_original']:
-            ui.notify('Nada para recarregar — o editor já está no estado original.', type='info')
+            _notificar('Nada para recarregar — o editor já está no estado original.', type='info')
             return
 
         with ui.dialog() as dialogo_recarregar, ui.card():
@@ -2386,14 +2526,14 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
         try:
             ed['texto_atual'].encode('ISO-8859-1')
             ET.fromstring(ed['texto_atual'].encode('ISO-8859-1'))
-            ui.notify('XML válido', type='positive')
+            _notificar('XML válido', type='positive')
         except Exception as e:
-            ui.notify(f'XML inválido: {e}', type='negative')
+            _notificar(f'XML inválido: {e}', type='negative')
     botao_validar.on('click', validar)
 
     def copiar(_=None):
         ui.run_javascript(f"navigator.clipboard.writeText({ed['texto_atual']!r})")
-        ui.notify('Código copiado para a área de transferência.', type='positive')
+        _notificar('Código copiado para a área de transferência.', type='positive')
     botao_copiar.on('click', copiar)
 
     def localizar(_=None):
