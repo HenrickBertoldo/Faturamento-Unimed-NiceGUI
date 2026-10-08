@@ -956,12 +956,12 @@ def processar_xml_tiss(arquivo_xml, dfs):
                                 proc_exec.insert(indice_apos(proc_exec, quantidade_elem), via_elem)
                             detalhes_proc.append(f"Via de Acesso ajustada: {via_val}")
                             
-                        tec_val = str(regra_p.get('Técnica (1, 2 ou EXCLUIR)', '')).strip().upper()
+                        tec_val = str(regra_p.get('Técnica (1, 2, 3 ou EXCLUIR)', '')).strip().upper()
                         tec_elem = proc_exec.find('ans:tecnicaUtilizada', NS)
                         if tec_val == 'EXCLUIR' and tec_elem is not None:
                             proc_exec.remove(tec_elem)
                             detalhes_proc.append("Técnica excluída")
-                        elif tec_val in ['1', '2', '01', '02']:
+                        elif tec_val in ['1', '2', '3', '01', '02', '03']:
                             tec_val = _normaliza_via_tecnica(tec_val)
                             if tec_elem is not None: tec_elem.text = tec_val
                             else:
