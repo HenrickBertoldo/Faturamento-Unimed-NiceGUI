@@ -22,6 +22,7 @@
 # Para publicar para outras pessoas acessarem, veja o GUIA_DEPLOY.md.
 # ==========================================================================
 import os
+import asyncio
 import re
 import io
 import json
@@ -95,7 +96,7 @@ def padronizar_codigo_8_digitos(cod):
 tabelas_padrao = {
     'troca_equipe_sadt': pd.DataFrame(columns=['Nome Original (Erro)', 'Nome Novo', 'CRM Novo', 'CBO Novo', 'Cód Operadora Novo', 'Grau Part Novo', 'Conselho Novo', 'UF Nova']),
     'medicos': pd.DataFrame(columns=['Nome do Médico', 'CBO Correto', 'Substituir por Cód. Operadora', 'Código na Operadora']),
-    'procedimentos': pd.DataFrame(columns=['Código do Procedimento', 'Grau Part Obrigatório (0 a 12 ou EXCLUIR)', 'Via de Acesso (1, 2 ou EXCLUIR)', 'Técnica (1, 2 , 3 ou EXCLUIR)']),
+    'procedimentos': pd.DataFrame(columns=['Código do Procedimento', 'Grau Part Obrigatório (0 a 12 ou EXCLUIR)', 'Via de Acesso (1, 2 ou EXCLUIR)', 'Técnica (1, 2 ou EXCLUIR)']),
     'conveniados': pd.DataFrame(columns=['Nome do Médico Conveniado']),
     'blindagem': pd.DataFrame(columns=['Código Prestador Protegido', 'Tipo', 'Código']),
     'itens': pd.DataFrame(columns=['Código Incorreto', 'Código Correto']),
@@ -955,12 +956,12 @@ def processar_xml_tiss(arquivo_xml, dfs):
                                 proc_exec.insert(indice_apos(proc_exec, quantidade_elem), via_elem)
                             detalhes_proc.append(f"Via de Acesso ajustada: {via_val}")
                             
-                        tec_val = str(regra_p.get('Técnica (1, 2 , 3 ou EXCLUIR)', '')).strip().upper()
+                        tec_val = str(regra_p.get('Técnica (1, 2 ou EXCLUIR)', '')).strip().upper()
                         tec_elem = proc_exec.find('ans:tecnicaUtilizada', NS)
                         if tec_val == 'EXCLUIR' and tec_elem is not None:
                             proc_exec.remove(tec_elem)
                             detalhes_proc.append("Técnica excluída")
-                        elif tec_val in ['1', '2', '3', '01', '02', '03']:
+                        elif tec_val in ['1', '2', '01', '02']:
                             tec_val = _normaliza_via_tecnica(tec_val)
                             if tec_elem is not None: tec_elem.text = tec_val
                             else:
@@ -1350,281 +1351,390 @@ TEMA_XML_ESCURO = 'githubDark'
 
 ui.add_head_html("""
 <style>
+    /* =====================================================================
+       SISTEMA DE DESIGN — Validador TISS
+       1 Tokens · 2 Base · 3 Botões e campos · 4 Barras e abas · 5 Editor
+       6 Painéis · 7 Avisos, menus e diálogos · 8 Estados (vazio, esqueleto,
+       arrastar) · 9 Paleta de comandos · 10 Acessibilidade
+       Sem @layer de propósito: o CSS do Quasar não usa camadas e, por isso,
+       sempre venceria regras colocadas dentro de uma camada.
+       ===================================================================== */
+
+    /* ---------- 1. TOKENS ---------- */
     :root {
-        --tiss-accent: #2563eb;
-        --tiss-accent-suave: #edf2fd;
-        --tiss-borda: #dde3ec;
-        --tiss-bg: #f3f5f9;
-        --tiss-bg-painel: #ffffff;
-        --tiss-bg-editor: #ffffff;
-        --tiss-texto: #334155;
-        --tiss-texto-forte: #0f172a;
-        --tiss-texto-suave: #556176;
-        --tiss-sombra: rgba(15, 23, 42, 0.05);
-        --tiss-sombra-hover: rgba(15, 23, 42, 0.08);
-        --tiss-diff-bg: #fffbeb;
-        --tiss-diff-borda: #d97706;
-        --tiss-diff-linha: #92400e;
-        --tiss-ok: #166f37;
-        --tiss-erro: #b91c1c;
-        --tiss-aviso: #a14a07;
-        --tiss-mono: 'Cascadia Mono', 'JetBrains Mono', Consolas, 'SF Mono', Menlo, monospace;
+        /* superfícies (cinzas frios, do mais baixo ao mais alto) */
+        --surface-0: #f6f7f9;            /* fundo da página / faixas */
+        --surface-1: #ffffff;            /* campos, painéis, popovers */
+        --surface-2: #eef0f4;            /* hover / preenchimento sutil */
+        --surface-3: #e3e6ec;            /* pressionado */
+        --editor-bg: #ffffff;
+        /* bordas translúcidas: acompanham qualquer fundo */
+        --border: rgba(15, 23, 42, 0.10);
+        --border-strong: rgba(15, 23, 42, 0.20);
+        /* texto */
+        --text-1: #0f172a;
+        --text-2: #334155;
+        --text-3: #556176;
+        /* acento e estados (cada um com versão suave para fundos) */
+        --accent: #2563eb;
+        --accent-hover: #1d4ed8;
+        --accent-soft: rgba(37, 99, 235, 0.09);
+        --accent-ring: rgba(37, 99, 235, 0.30);
+        --ok: #166f37;      --ok-soft: rgba(22, 111, 55, 0.10);
+        --warn: #a14a07;    --warn-soft: rgba(161, 74, 7, 0.10);
+        --danger: #b91c1c;  --danger-soft: rgba(185, 28, 28, 0.09);
+        /* profundidade: realce interno + sombras curtas, nunca pesadas */
+        --inset-hi: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+        --inset-field: inset 0 1px 2px rgba(15, 23, 42, 0.05);
+        --shadow-1: 0 1px 2px rgba(15, 23, 42, 0.06);
+        --shadow-2: 0 8px 24px rgba(15, 23, 42, 0.10), 0 1px 2px rgba(15, 23, 42, 0.06);
+        --shimmer: rgba(255, 255, 255, 0.75);
+        /* escala de espaçamento (múltiplos de 4 px) e raios */
+        --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px;
+        --r-sm: 4px; --r-md: 6px; --r-lg: 8px; --r-xl: 10px;
+        /* movimento */
+        --ease: cubic-bezier(0.16, 1, 0.3, 1);
+        --t-fast: 120ms; --t: 180ms; --t-slow: 240ms;
+        /* tipografia fluida (só nas faixas e rótulos; o editor tem tamanho fixo) */
+        --fs-xs: clamp(0.75rem, 0.72rem + 0.08vw, 0.8125rem);   /* 12 → 13 px */
+        --fs-sm: clamp(0.8125rem, 0.78rem + 0.10vw, 0.875rem);  /* 13 → 14 px */
+        --fs-md: clamp(0.875rem, 0.84rem + 0.12vw, 0.9375rem);  /* 14 → 15 px */
+        --mono: 'Cascadia Mono', 'JetBrains Mono', Consolas, 'SF Mono', Menlo, monospace;
+        /* nomes antigos ainda usados no Python (mantidos como apelidos) */
+        --tiss-texto-suave: var(--text-3);
     }
-    /* Tema escuro: aplicado quando o Quasar liga o dark mode (ver botão de
-       tema no topo da página, controlado por ui.dark_mode() no Python). */
     body.body--dark {
-        --tiss-accent: #60a5fa;
-        --tiss-accent-suave: #1b2b4a;
-        --tiss-borda: #26324a;
-        --tiss-bg: #0b1220;
-        --tiss-bg-painel: #131c2e;
-        --tiss-bg-editor: #0d1117;
-        --tiss-texto: #cbd5e1;
-        --tiss-texto-forte: #f1f5f9;
-        --tiss-texto-suave: #8b9ab5;
-        --tiss-sombra: rgba(0, 0, 0, 0.35);
-        --tiss-sombra-hover: rgba(0, 0, 0, 0.5);
-        --tiss-diff-bg: #2e260e;
-        --tiss-diff-borda: #d97706;
-        --tiss-diff-linha: #fbbf24;
-        --tiss-ok: #4ade80;
-        --tiss-erro: #f87171;
-        --tiss-aviso: #fbbf24;
+        --surface-0: #101217;
+        --surface-1: #171a21;
+        --surface-2: #1f232c;
+        --surface-3: #282d38;
+        --editor-bg: #0d1117;
+        --border: rgba(255, 255, 255, 0.08);
+        --border-strong: rgba(255, 255, 255, 0.16);
+        --text-1: #f4f5f7;
+        --text-2: #c9ced8;
+        --text-3: #8f98a8;
+        --accent: #60a5fa;
+        --accent-hover: #7db5fb;
+        --accent-soft: rgba(96, 165, 250, 0.14);
+        --accent-ring: rgba(96, 165, 250, 0.38);
+        --ok: #4ade80;      --ok-soft: rgba(74, 222, 128, 0.12);
+        --warn: #fbbf24;    --warn-soft: rgba(251, 191, 36, 0.12);
+        --danger: #f87171;  --danger-soft: rgba(248, 113, 113, 0.12);
+        --inset-hi: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+        --inset-field: inset 0 1px 2px rgba(0, 0, 0, 0.35);
+        --shadow-1: 0 1px 0 rgba(0, 0, 0, 0.35);
+        --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.04);
+        --shimmer: rgba(255, 255, 255, 0.07);
     }
 
-    /* ---------- Página fixa: sem rolagem, só o editor/painéis rolam ---------- */
+    /* ---------- 2. BASE: página fixa, só os painéis rolam ---------- */
     html, body { height: 100%; overflow: hidden; }
     body {
-        background-color: var(--tiss-bg) !important;
+        background-color: var(--surface-0) !important;
+        color: var(--text-2);
         font-family: 'Segoe UI Variable', 'Segoe UI', Inter, system-ui, -apple-system, Roboto, sans-serif;
-        font-size: 13px;
+        font-size: var(--fs-sm);
         font-variant-numeric: tabular-nums;
-        transition: background-color .15s ease;
+        -webkit-font-smoothing: antialiased;
+        transition: background-color var(--t) var(--ease), color var(--t) var(--ease);
     }
+    ::selection { background: var(--accent-ring); }
     .q-layout, .q-page-container { height: 100dvh; min-height: 0 !important; }
     .q-page { height: 100dvh !important; min-height: 0 !important; }
     .nicegui-content {
         height: 100%;
-        padding: 6px 12px 4px !important;
-        gap: 4px !important;
-        display: flex;
-        flex-direction: column;
-        flex-wrap: nowrap;
-        align-items: stretch;
-        overflow: hidden;
+        padding: var(--sp-2) var(--sp-3) var(--sp-1) !important;
+        gap: var(--sp-1) !important;
+        display: flex; flex-direction: column; flex-wrap: nowrap;
+        align-items: stretch; overflow: hidden;
     }
+    /* Escala de textos (sobrepõe os utilitários do Tailwind do NiceGUI) */
+    .text-xs { font-size: var(--fs-xs) !important; line-height: 1.4 !important; }
+    .text-sm { font-size: var(--fs-sm) !important; line-height: 1.45 !important; }
+    .text-base { font-size: var(--fs-md) !important; line-height: 1.45 !important; }
+    body.body--dark .text-gray-600, body.body--dark .text-gray-500 { color: var(--text-3) !important; }
+    body.body--dark .text-red-700 { color: var(--danger) !important; }
+    body.body--dark .text-green-700 { color: var(--ok) !important; }
+    body.body--dark .text-amber-700 { color: var(--warn) !important; }
 
-    .q-card {
-        border-radius: 10px !important;
-        background-color: var(--tiss-bg-painel) !important;
-        color: var(--tiss-texto-forte) !important;
+    /* ---------- 3. BOTÕES E CAMPOS ---------- */
+    /* Transição suave em todo botão; o clique "afunda" 1 px */
+    body .q-btn {
+        transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease),
+                    border-color var(--t-fast) var(--ease), box-shadow var(--t) var(--ease),
+                    transform var(--t-fast) var(--ease), opacity var(--t-fast) var(--ease);
     }
+    body .q-btn:active:not(.disabled):not([disabled]) { transform: translateY(1px) scale(0.985); }
+    /* Botões de ícone: área clicável de 32 px */
+    .nicegui-content .q-btn--round.q-btn--dense {
+        width: 32px; height: 32px; min-width: 32px; min-height: 32px; font-size: 12px;
+    }
+    .nicegui-content .q-btn--round.q-btn--dense:hover { background-color: var(--surface-2); }
+    .nicegui-content .q-btn--round.q-btn--dense:active { background-color: var(--surface-3); }
+    /* Botões pequenos (copiar dentro do campo, X da aba): 24 px visíveis, área de clique maior */
+    .nicegui-content .q-btn--round.q-btn--dense.tiss-mini {
+        width: 24px; height: 24px; min-width: 24px; min-height: 24px; font-size: 11px; position: relative;
+    }
+    .tiss-mini::after { content: ''; position: absolute; inset: -6px; }
+    /* Botão primário: azul chapado com realce interno (sem gradiente) */
+    body .q-btn.tiss-btn-primario {
+        background: var(--accent) !important; color: #fff !important;
+        border: 1px solid color-mix(in srgb, var(--accent) 78%, #000);
+        border-radius: var(--r-md); min-height: 32px; padding: 0 var(--sp-3);
+        font-weight: 600; letter-spacing: 0;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 1px 2px rgba(15, 23, 42, 0.18);
+    }
+    body.body--dark .q-btn.tiss-btn-primario { color: #0b1220 !important; }
+    body .q-btn.tiss-btn-primario:hover:not(.disabled) {
+        background: var(--accent-hover) !important; transform: translateY(-1px);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.26), 0 4px 10px color-mix(in srgb, var(--accent) 32%, transparent);
+    }
+    body .q-btn.tiss-btn-primario:active:not(.disabled) {
+        transform: translateY(0) scale(0.985);
+        box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25);
+    }
+    /* Campos: superfície branca, borda sutil, sombra interna, anel de foco */
+    .nicegui-content .q-field--outlined .q-field__control {
+        background: var(--surface-1); border-radius: var(--r-md);
+        box-shadow: var(--inset-field);
+        transition: box-shadow var(--t) var(--ease);
+    }
+    .nicegui-content .q-field--outlined .q-field__control:before { border-color: var(--border); border-radius: var(--r-md); transition: border-color var(--t-fast) var(--ease); }
+    .nicegui-content .q-field--outlined:hover .q-field__control:before { border-color: var(--border-strong); }
+    .nicegui-content .q-field--outlined.q-field--focused .q-field__control:after { border-width: 1px; border-color: var(--accent); border-radius: var(--r-md); }
+    .nicegui-content .q-field--outlined.q-field--focused .q-field__control {
+        box-shadow: var(--inset-field), 0 0 0 3px var(--accent-ring);
+    }
+    .nicegui-content .q-field__label { font-size: var(--fs-xs); color: var(--text-3); }
+    .nicegui-content .q-field__native, .nicegui-content .q-field__input { color: var(--text-1); }
 
-    /* ---------- Barra superior da aplicação ---------- */
-    /* As barras (topo, abas, controles, status, mensagens) são "chrome" plano,
-       sobre o fundo da página, sem caixa própria: só o EDITOR tem moldura e
-       sombra, para ser o elemento em destaque da tela. */
+    /* ---------- 4. BARRAS E ABAS (faixas planas; só o editor tem moldura) ---------- */
     .tiss-appbar, .tiss-abasbar, .tiss-controlbar, .tiss-statusbar, .tiss-mensagens {
         background: transparent; border: 0; border-radius: 0; box-shadow: none;
     }
-    .tiss-barra-localizar {
-        background-color: var(--tiss-accent-suave);
-        border: 1px solid var(--tiss-borda); border-radius: 6px; box-shadow: none;
-    }
     .tiss-appbar {
-        position: relative;
-        flex: 0 0 auto;
-        padding: 4px 10px;
-        gap: 6px !important;
-        min-height: 40px;
-        flex-wrap: nowrap !important;
-        align-items: center !important;
-        border-bottom: 1px solid var(--tiss-borda);
+        position: relative; flex: 0 0 auto; min-height: 44px;
+        padding: var(--sp-1) var(--sp-2); gap: var(--sp-2) !important;
+        flex-wrap: nowrap !important; align-items: center !important;
+        border-bottom: 1px solid var(--border);
     }
-    .tiss-brand-icon { color: var(--tiss-accent); font-size: 20px; }
-    .tiss-app-name { font-weight: 700; color: var(--tiss-texto-forte); font-size: 14px; letter-spacing: .01em; margin-right: 6px; }
-    .tiss-progress { position: absolute !important; left: 8px; right: 8px; bottom: 0; width: auto !important; }
-
+    .tiss-brand-icon { color: var(--accent); font-size: 20px; }
+    .tiss-app-name { font-weight: 650; color: var(--text-1); font-size: var(--fs-md); letter-spacing: -0.005em; margin-right: var(--sp-1); }
+    .tiss-progress { position: absolute !important; left: 0; right: 0; bottom: -1px; width: auto !important; }
+    /* Atalho da paleta de comandos na barra superior */
+    .nicegui-content .q-btn.tiss-cmdk {
+        border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface-1);
+        color: var(--text-3); min-height: 32px; padding: 0 var(--sp-2); box-shadow: var(--inset-hi);
+    }
+    .nicegui-content .q-btn.tiss-cmdk:hover { border-color: var(--border-strong); color: var(--text-1); background: var(--surface-2); }
+    .tiss-kbd {
+        font-family: var(--mono); font-size: var(--fs-xs); color: var(--text-3);
+        border: 1px solid var(--border); border-radius: var(--r-sm); padding: 0 6px; background: var(--surface-2);
+        line-height: 1.5; white-space: nowrap;
+    }
     /* Upload compacto: só o cabeçalho do q-uploader, como um botão de barra */
     .tiss-upload.q-uploader {
-        width: auto; max-width: none; min-width: 0;
-        box-shadow: none; background: transparent; border-radius: 6px;
-        border: 1px solid var(--tiss-accent);
+        width: auto; max-width: none; min-width: 0; box-shadow: none; background: transparent;
+        border-radius: var(--r-md); border: 1px solid var(--accent);
+        transition: background-color var(--t-fast) var(--ease), box-shadow var(--t) var(--ease);
     }
+    .tiss-upload.q-uploader:hover { background: var(--accent-soft); }
     .tiss-upload .q-uploader__list { display: none; }
-    .tiss-upload .q-uploader__header {
-        background: transparent !important; color: var(--tiss-accent) !important;
-        padding: 0 4px 0 10px; min-height: 28px; align-items: center;
-    }
+    .tiss-upload .q-uploader__header { background: transparent !important; color: var(--accent) !important; padding: 0 var(--sp-1) 0 var(--sp-3); min-height: 30px; align-items: center; }
     .tiss-upload .q-uploader__subtitle { display: none; }
-    .tiss-upload .q-uploader__title { font-size: 13px; font-weight: 600; line-height: 1.2; }
-    .tiss-upload .q-btn { color: var(--tiss-accent) !important; }
+    .tiss-upload .q-uploader__title { font-size: var(--fs-sm); font-weight: 600; line-height: 1.2; }
+    .tiss-upload .q-btn { color: var(--accent) !important; }
 
-    /* ---------- Barra de controle: arquivo, senha, carteira, edição ---------- */
-    .tiss-controlbar {
-        flex: 0 0 auto;
-        padding: 5px 8px;
-        gap: 8px !important;
-        flex-wrap: nowrap !important;
-        align-items: center !important;
-    }
-    /* Linha de abas dos arquivos */
-    .tiss-abasbar {
-        flex: 0 0 auto; padding: 0 8px 0 0; gap: 6px !important;
-        flex-wrap: nowrap !important; align-items: center !important;
-    }
+    /* Abas dos arquivos */
+    .tiss-abasbar { flex: 0 0 auto; padding: 0 var(--sp-2) 0 0; gap: var(--sp-2) !important; flex-wrap: nowrap !important; align-items: center !important; }
     .tiss-abas { flex: 1 1 0; min-width: 0; }
-    .tiss-abas .q-tab { min-height: 34px; padding: 0 14px; font-size: 13px; color: var(--tiss-texto-suave); }
-    .tiss-abas .q-tab:hover { color: var(--tiss-texto-forte); }
-    .tiss-abas .q-tab { border-radius: 6px 6px 0 0; }
-    .tiss-abas .q-tab--active { background-color: var(--tiss-accent-suave); }
-    .tiss-aba-fechar { margin-left: 8px; margin-right: -6px; opacity: .55; }
-    .tiss-aba-fechar:hover { opacity: 1; color: var(--tiss-erro); }
-    .tiss-abas .q-tab__label { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tiss-abas .q-tab {
+        min-height: 36px; padding: 0 var(--sp-3); font-size: var(--fs-sm);
+        color: var(--text-3); border-radius: var(--r-md) var(--r-md) 0 0;
+        transition: color var(--t-fast) var(--ease), background-color var(--t) var(--ease);
+    }
+    .tiss-abas .q-tab:hover { color: var(--text-1); background-color: var(--surface-2); }
+    .tiss-abas .q-tab--active { color: var(--accent); background-color: var(--accent-soft); }
+    .tiss-abas .q-tab__label { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+    .tiss-abas .q-tab--active .q-tab__label { font-weight: 600; }
+    .tiss-abas .q-tab__indicator { height: 2px; border-radius: 2px 2px 0 0; opacity: 1; transform: scaleX(0); transform-origin: left; transition: transform var(--t-slow) var(--ease); }
+    .tiss-abas .q-tab--active .q-tab__indicator { transform: scaleX(1); }
+    .tiss-aba-ponto { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); margin-left: var(--sp-2); flex: none; }
+    .tiss-aba-fechar { margin-left: var(--sp-1); margin-right: -6px; opacity: 0; color: var(--text-3); }
+    .tiss-abas .q-tab:hover .tiss-aba-fechar, .tiss-abas .q-tab--active .tiss-aba-fechar, .tiss-aba-fechar:focus-visible { opacity: 0.7; }
+    .tiss-aba-fechar:hover { opacity: 1 !important; color: var(--danger); }
+
+    /* Barra de controle: Senha, Carteira, ferramentas e Baixar */
+    .tiss-controlbar { flex: 0 0 auto; min-height: 48px; padding: var(--sp-1) var(--sp-1); gap: var(--sp-2) !important; flex-wrap: nowrap !important; align-items: center !important; }
     .tiss-campo { width: 150px; flex: 0 1 150px; min-width: 100px; }
     .tiss-campo-senha { width: 150px; flex: 0 1 150px; }
     .tiss-campo-carteira { width: 235px; flex: 0 1 235px; min-width: 170px; }
-    .tiss-campo input { font-family: var(--tiss-mono); font-size: 13px; }
-    .tiss-controlbar .q-field--outlined .q-field__control { background: var(--tiss-bg-painel); }
-    .tiss-controlbar .q-field--dense .q-field__control,
-    .tiss-controlbar .q-field--dense .q-field__marginal { height: 34px; }
-    .tiss-controlbar .q-field__label { font-size: 12px; }
-    .tiss-ferramentas { gap: 0 !important; flex-wrap: nowrap !important; }
-    .tiss-ferramentas .q-btn { color: var(--tiss-texto-suave); }
-    .tiss-ferramentas .q-btn:hover { color: var(--tiss-accent); background-color: var(--tiss-accent-suave); }
-    .tiss-btn-baixar { font-weight: 600; padding: 0 12px; height: 32px; border-radius: 6px; }
+    .tiss-campo input { font-family: var(--mono); font-size: var(--fs-sm); }
+    .tiss-controlbar .q-field--dense .q-field__control, .tiss-controlbar .q-field--dense .q-field__marginal { height: 36px; }
+    .tiss-ferramentas { gap: 2px !important; flex-wrap: nowrap !important; }
+    .tiss-ferramentas .q-btn { color: var(--text-3); }
+    .tiss-ferramentas .q-btn:hover { color: var(--accent); }
 
-    /* ---------- Área de trabalho (ocupa todo o espaço restante) ---------- */
-    .tiss-corpo {
-        flex: 1 1 0; min-height: 0; width: 100%;
-        display: flex; flex-direction: column; gap: 4px !important; flex-wrap: nowrap;
-    }
-    .tiss-workspace {
-        flex: 1 1 0; min-height: 0; width: 100%;
-        display: flex; flex-direction: column; gap: 6px !important; flex-wrap: nowrap;
-    }
-    .tiss-editor-area {
-        flex: 1 1 0; min-height: 0; width: 100%;
-        gap: 6px !important; flex-wrap: nowrap !important; align-items: stretch !important;
-    }
+    /* Área de trabalho (ocupa todo o espaço restante) */
+    .tiss-corpo { position: relative; flex: 1 1 0; min-height: 0; width: 100%; display: flex; flex-direction: column; gap: var(--sp-1) !important; flex-wrap: nowrap; }
+    .tiss-workspace { flex: 1 1 0; min-height: 0; width: 100%; display: flex; flex-direction: column; gap: var(--sp-1) !important; flex-wrap: nowrap; }
+
+    /* ---------- 5. EDITOR ---------- */
+    .tiss-editor-area { flex: 1 1 0; min-height: 0; width: 100%; gap: var(--sp-2) !important; flex-wrap: nowrap !important; align-items: stretch !important; }
     .tiss-editor.nicegui-codemirror {
-        flex: 1 1 0; min-width: 0; height: 100%; width: auto;
-        border: 1px solid var(--tiss-borda); border-radius: 8px; overflow: hidden;
-        box-shadow: 0 1px 2px var(--tiss-sombra);
-        background-color: var(--tiss-bg-editor);
+        flex: 1 1 0; min-width: 0; height: 100%; width: auto; overflow: hidden;
+        border: 1px solid var(--border); border-radius: var(--r-lg);
+        box-shadow: var(--inset-hi), var(--shadow-1);
+        background-color: var(--editor-bg);
+        transition: border-color var(--t) var(--ease), box-shadow var(--t) var(--ease);
     }
-    .tiss-editor .cm-editor { height: 100%; font-size: 13px; background-color: var(--tiss-bg-editor) !important; }
-    .tiss-editor .cm-scroller { font-family: var(--tiss-mono) !important; line-height: 1.55; }
-    /* A ocorrência selecionada pela navegação do Localizar continua bem visível
-       mesmo com o foco no campo de busca (o CodeMirror a deixaria cinza-claro). */
+    .tiss-editor.nicegui-codemirror:focus-within { border-color: var(--accent); box-shadow: var(--inset-hi), 0 0 0 3px var(--accent-soft); }
+    .tiss-editor .cm-editor { height: 100%; font-size: 13px; background-color: var(--editor-bg) !important; }
+    .tiss-editor .cm-editor.cm-focused { outline: none; }
+    .tiss-editor .cm-scroller { font-family: var(--mono) !important; line-height: 1.55; }
+    .tiss-editor .cm-gutters { background-color: var(--editor-bg) !important; border-right: 1px solid var(--border) !important; color: var(--text-3) !important; }
+    /* A ocorrência selecionada pela navegação do Localizar continua bem visível com o foco na busca */
     .tiss-editor .cm-editor:not(.cm-focused) .cm-selectionBackground { background: rgba(250, 204, 21, 0.55) !important; }
-    .tiss-editor .cm-gutters { background-color: var(--tiss-bg-editor) !important; border-right: 1px solid var(--tiss-borda) !important; }
 
-    /* Painel lateral de alterações (só aparece quando há edição pendente) */
+    /* ---------- 6. PAINÉIS: alterações, localizar, status, mensagens ---------- */
     .tiss-diff-painel {
-        flex: 0 0 290px; width: 290px; min-height: 0;
-        background-color: var(--tiss-bg-painel);
-        border: 1px solid var(--tiss-borda); border-radius: 8px;
-        padding: 6px 8px; gap: 4px !important; flex-wrap: nowrap;
+        flex: 0 0 300px; width: 300px; min-height: 0; padding: var(--sp-2); gap: var(--sp-1) !important; flex-wrap: nowrap;
+        background-color: var(--surface-1); border: 1px solid var(--border); border-radius: var(--r-lg);
+        box-shadow: var(--inset-hi); animation: tiss-entra-direita var(--t-slow) var(--ease);
     }
-    .tiss-diff-titulo { font-size: 13px; font-weight: 600; color: var(--tiss-texto-forte); }
+    .tiss-diff-titulo { font-size: var(--fs-sm); font-weight: 600; color: var(--text-1); }
     .tiss-diff-lista { flex: 1 1 0; min-height: 0; overflow-y: auto; }
-    .diff-item {
-        border-left: 3px solid var(--tiss-diff-borda);
-        background-color: var(--tiss-diff-bg);
-        padding: 5px 8px; margin-bottom: 5px; border-radius: 5px; font-size: 12px;
-    }
-    .diff-linha { color: var(--tiss-diff-linha); font-weight: 700; font-size: 12px; }
-    .diff-campo { color: var(--tiss-texto-forte); font-weight: 600; }
-    .diff-valores { color: var(--tiss-texto-suave); font-family: var(--tiss-mono); font-size: 12px; word-break: break-all; }
-
-    /* Barra de Localizar/Substituir (oculta até o botão de busca ser clicado) */
-    .tiss-barra-localizar { flex: 0 0 auto; padding: 4px 8px; background-color: var(--tiss-accent-suave); }
-
-    /* ---------- Barra de status compacta ---------- */
-    .tiss-statusbar {
-        flex: 0 0 auto; padding: 3px 12px; min-height: 28px;
-        font-size: 12px; color: var(--tiss-texto);
-        gap: 14px !important; flex-wrap: nowrap !important; align-items: center !important;
-    }
-    .tiss-file-name { font-weight: 600; color: var(--tiss-texto-forte); white-space: nowrap; }
-    .tiss-file-name.modificado { color: var(--tiss-aviso); }
-    .tiss-st { white-space: nowrap; color: var(--tiss-texto-suave); }
-    .tiss-st-sujo, .tiss-st-salvo { font-weight: 600; }
-    .tiss-st-sujo { color: var(--tiss-aviso); }
-    .tiss-st-salvo { color: var(--tiss-ok); }
-    .tiss-st-sujo::before, .tiss-st-salvo::before {
-        content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
-        background: currentColor; margin-right: 6px; vertical-align: 1px;
-    }
-    .tiss-hash code { font-family: var(--tiss-mono); font-size: 12px; color: var(--tiss-texto); background: none; padding: 0; }
-    .tiss-hash code.dif { color: var(--tiss-aviso); font-weight: 600; }
-    .tiss-hash .sep { display: inline-block; width: 1px; height: 11px; background: var(--tiss-borda); margin: 0 10px; vertical-align: -1px; }
-
-    /* ---------- Painel de Mensagens (retrátil, rolagem interna) ---------- */
-    .tiss-mensagens { flex: 0 0 auto; padding: 0; overflow: hidden; border-top: 1px solid var(--tiss-borda); }
-    .tiss-mensagens .q-item { min-height: 32px; padding: 0 12px; }
-    .tiss-mensagens-titulo { font-size: 13px; font-weight: 600; color: var(--tiss-texto-forte); }
-    .tiss-mensagens-corpo {
-        max-height: min(22vh, 200px); overflow-y: auto;
-        padding: 4px 14px 8px; gap: 2px !important;
-        border-top: 1px solid var(--tiss-borda);
-    }
-    .tiss-mensagens-corpo .q-icon { font-size: 16px; }
-    .tiss-mensagens-corpo .linha { gap: 8px !important; flex-wrap: nowrap !important; align-items: center !important; }
-    .tiss-msg-ok { color: var(--tiss-ok); font-weight: 600; font-size: 13px; }
-    .tiss-msg-erro { color: var(--tiss-erro); font-weight: 600; font-size: 13px; }
-    .tiss-msg-ok::before, .tiss-msg-erro::before {
-        content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
-        background: currentColor; margin-right: 6px; vertical-align: 1px;
-    }
-
-    /* Notificações abaixo das barras superiores (não cobrem Mensagens/status) */
-    .q-notifications__list--top { top: 138px !important; }
-
-    /* Painel de alterações: só o trecho que mudou */
-    .diff-trecho { font-family: var(--tiss-mono); font-size: 12px; line-height: 1.45; word-break: break-all; color: var(--tiss-texto-suave); }
-    .diff-trecho .rot { display: inline-block; width: 38px; font-family: inherit; font-weight: 700; opacity: .8; }
-    .diff-trecho .del { background: rgba(220, 38, 38, .16); color: var(--tiss-texto-forte); border-radius: 3px; padding: 0 2px; }
-    .diff-trecho .add { background: rgba(22, 163, 74, .18); color: var(--tiss-texto-forte); border-radius: 3px; padding: 0 2px; }
+    .diff-item { border-left: 2px solid var(--warn); background-color: var(--warn-soft); padding: 6px var(--sp-2); margin-bottom: 6px; border-radius: var(--r-sm); font-size: var(--fs-xs); }
+    .diff-linha { color: var(--warn); font-weight: 650; font-size: var(--fs-xs); }
+    .diff-campo { color: var(--text-1); font-weight: 600; }
+    .diff-trecho { font-family: var(--mono); font-size: var(--fs-xs); line-height: 1.45; word-break: break-all; color: var(--text-3); }
+    .diff-trecho .rot { display: inline-block; width: 42px; font-family: inherit; font-weight: 650; opacity: .85; }
+    .diff-trecho .del { background: var(--danger-soft); color: var(--text-1); border-radius: 3px; padding: 0 2px; }
+    .diff-trecho .add { background: var(--ok-soft); color: var(--text-1); border-radius: 3px; padding: 0 2px; }
     .diff-trecho .vazio { font-style: italic; opacity: .7; }
-
-    /* Hash abreviado, clicável para copiar */
-    .tiss-hash { margin-left: auto; gap: 6px !important; flex: 0 0 auto; flex-wrap: nowrap !important; align-items: center !important; font-size: 12px; }
-    .tiss-hash-rot { color: var(--tiss-texto-suave); }
-    .tiss-hash-val { font-family: var(--tiss-mono); color: var(--tiss-texto); cursor: pointer; border-radius: 4px; padding: 0 3px; }
-    .tiss-hash-val:hover { background: var(--tiss-accent-suave); color: var(--tiss-accent); }
-    .tiss-hash-val.dif { color: var(--tiss-aviso); font-weight: 600; }
-
-    /* Escala de textos da interface: 12 (secundário), 13 (corpo), 14 (destaque) */
-    .text-xs { font-size: 12px !important; line-height: 1.4 !important; }
-    .text-sm { font-size: 13px !important; line-height: 1.45 !important; }
-    .text-base { font-size: 14px !important; line-height: 1.45 !important; }
-
-    /* ---------- Acessibilidade: foco visível pelo teclado e movimento reduzido ---------- */
-    .q-btn:focus-visible, .q-tab:focus-visible, .q-item:focus-visible, .tiss-hash-val:focus-visible,
-    .tiss-upload .q-btn:focus-visible {
-        outline: 2px solid var(--tiss-accent); outline-offset: 1px; border-radius: 6px;
+    .tiss-barra-localizar {
+        flex: 0 0 auto; padding: var(--sp-1) var(--sp-2);
+        background-color: var(--surface-1); border: 1px solid var(--border); border-radius: var(--r-md);
+        box-shadow: var(--inset-hi), var(--shadow-1); animation: tiss-entra-baixo var(--t) var(--ease);
     }
-    .q-field--focused .q-field__control:after { border-width: 2px; }
+    /* Barra de status */
+    .tiss-statusbar { flex: 0 0 auto; min-height: 32px; padding: 0 var(--sp-3); font-size: var(--fs-xs); color: var(--text-2); gap: var(--sp-4) !important; flex-wrap: nowrap !important; align-items: center !important; }
+    .tiss-file-name { font-weight: 600; color: var(--text-1); white-space: nowrap; }
+    .tiss-file-name.modificado { color: var(--warn); }
+    .tiss-st { white-space: nowrap; color: var(--text-3); }
+    .tiss-st-sujo, .tiss-st-salvo { font-weight: 600; }
+    .tiss-st-sujo { color: var(--warn); }
+    .tiss-st-salvo { color: var(--ok); }
+    .tiss-st-sujo::before, .tiss-st-salvo::before, .tiss-msg-ok::before, .tiss-msg-erro::before {
+        content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+        background: currentColor; margin-right: 6px; vertical-align: 1px;
+    }
+    .tiss-hash { margin-left: auto; gap: var(--sp-2) !important; flex: 0 0 auto; flex-wrap: nowrap !important; align-items: center !important; font-size: var(--fs-xs); }
+    .tiss-hash-rot { color: var(--text-3); }
+    .tiss-hash-val { font-family: var(--mono); color: var(--text-2); cursor: pointer; border-radius: var(--r-sm); padding: 2px 4px; transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
+    .tiss-hash-val:hover { background: var(--accent-soft); color: var(--accent); }
+    .tiss-hash-val.dif { color: var(--warn); font-weight: 600; }
+    .tiss-hash .sep { display: inline-block; width: 1px; height: 12px; background: var(--border-strong); margin: 0 var(--sp-1); vertical-align: -1px; }
+    /* Painel de Mensagens: retrátil, com trilho colorido por tipo de linha */
+    .tiss-mensagens { flex: 0 0 auto; padding: 0; overflow: hidden; border-top: 1px solid var(--border); }
+    .tiss-mensagens .q-item { min-height: 36px; padding: 0 var(--sp-3); transition: background-color var(--t-fast) var(--ease); }
+    .tiss-mensagens .q-item:hover { background-color: var(--surface-2); }
+    .tiss-mensagens-titulo { font-size: var(--fs-sm); font-weight: 600; color: var(--text-1); }
+    .tiss-mensagens-corpo { max-height: min(22vh, 200px); overflow-y: auto; padding: var(--sp-1) var(--sp-3) var(--sp-2); gap: 2px !important; border-top: 1px solid var(--border); }
+    .tiss-mensagens-corpo .q-icon { font-size: 16px; }
+    .tiss-mensagens-corpo .linha { gap: var(--sp-2) !important; flex-wrap: nowrap !important; align-items: center !important; border-left: 2px solid transparent; padding-left: var(--sp-2); }
+    .tiss-mensagens-corpo .linha:has(.text-positive) { border-left-color: var(--ok); }
+    .tiss-mensagens-corpo .linha:has(.text-warning) { border-left-color: var(--warn); }
+    .tiss-mensagens-corpo .linha:has(.text-primary) { border-left-color: var(--accent); }
+    .tiss-msg-ok { color: var(--ok); font-weight: 600; font-size: var(--fs-sm); }
+    .tiss-msg-erro { color: var(--danger); font-weight: 600; font-size: var(--fs-sm); }
+
+    /* ---------- 7. AVISOS, MENUS, DICAS E DIÁLOGOS ---------- */
+    .q-notifications__list--top { top: 152px !important; }
+    body .q-notification {
+        background: var(--surface-1) !important; color: var(--text-1) !important;
+        border: 1px solid var(--border-strong); border-left-width: 3px; border-radius: var(--r-lg);
+        box-shadow: var(--shadow-2); font-size: var(--fs-sm); min-height: 44px;
+    }
+    body .q-notification.bg-positive { border-left-color: var(--ok); }
+    body .q-notification.bg-negative { border-left-color: var(--danger); }
+    body .q-notification.bg-warning { border-left-color: var(--warn); }
+    body .q-notification.bg-info { border-left-color: var(--accent); }
+    body .q-notification.bg-positive .q-notification__icon { color: var(--ok); }
+    body .q-notification.bg-negative .q-notification__icon { color: var(--danger); }
+    body .q-notification.bg-warning .q-notification__icon { color: var(--warn); }
+    body .q-notification.bg-info .q-notification__icon { color: var(--accent); }
+    body .q-notification .q-btn { color: var(--text-3); }
+    body .q-menu {
+        background: var(--surface-1); color: var(--text-1); border: 1px solid var(--border-strong);
+        border-radius: var(--r-lg); box-shadow: var(--shadow-2);
+    }
+    body .q-tooltip { background: var(--text-1) !important; color: var(--surface-1) !important; font-size: var(--fs-xs); border-radius: var(--r-md); padding: 4px var(--sp-2); }
+    body .q-dialog__backdrop { background: rgba(10, 12, 16, 0.42); backdrop-filter: blur(2px); }
+    body .q-card { background-color: var(--surface-1) !important; color: var(--text-1) !important; border: 1px solid var(--border); border-radius: var(--r-xl) !important; box-shadow: var(--shadow-2); }
+
+    /* ---------- 8. ESTADOS: vazio, esqueleto (shimmer) e arrastar arquivos ---------- */
+    .tiss-vazio {
+        flex: 1 1 0; margin: var(--sp-3) 0; gap: var(--sp-1) !important; color: var(--text-3);
+        border: 1px dashed var(--border-strong); border-radius: var(--r-xl); background: var(--surface-1);
+        transition: border-color var(--t) var(--ease), background-color var(--t) var(--ease);
+    }
+    .tiss-vazio-icone { width: 56px; height: 56px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; margin-bottom: var(--sp-2); }
+    .tiss-vazio-icone .q-icon { font-size: 28px; }
+    body.tiss-arrastando .tiss-vazio { border-color: var(--accent); background: var(--accent-soft); }
+    /* Esqueleto: classes utilitárias reutilizáveis para qualquer estado assíncrono */
+    .skeleton { position: relative; overflow: hidden; background: var(--surface-2); border-radius: var(--r-md); }
+    .skeleton::after {
+        content: ''; position: absolute; inset: 0; transform: translateX(-100%);
+        background: linear-gradient(90deg, transparent, var(--shimmer), transparent);
+        animation: tiss-shimmer 1.5s var(--ease) infinite;
+    }
+    .skeleton-text { height: 10px; border-radius: var(--r-sm); }
+    .skeleton-block { min-height: 36px; }
+    .tiss-esqueleto { position: absolute; inset: 0; z-index: 20; background: var(--surface-0); padding: var(--sp-1) 0; gap: var(--sp-2) !important; flex-wrap: nowrap; animation: tiss-surge var(--t) var(--ease); }
+    /* Aviso "solte os arquivos" que cobre a janela durante o arraste (criado pelo script) */
+    .tiss-drop {
+        position: fixed; inset: var(--sp-3); z-index: 9000; display: none; align-items: center; justify-content: center;
+        border: 2px dashed var(--accent); border-radius: var(--r-xl); background: var(--accent-soft);
+        color: var(--accent); font-size: var(--fs-md); font-weight: 600; pointer-events: none; backdrop-filter: blur(2px);
+    }
+    .tiss-drop.ativo { display: flex; animation: tiss-surge var(--t) var(--ease); }
+    @keyframes tiss-shimmer { to { transform: translateX(100%); } }
+    @keyframes tiss-surge { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes tiss-entra-direita { from { opacity: 0; transform: translateX(10px); } to { opacity: 1; transform: none; } }
+    @keyframes tiss-entra-baixo { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+
+    /* ---------- 9. PALETA DE COMANDOS (Ctrl+K) ---------- */
+    .tiss-paleta.q-card { width: min(560px, 92vw); max-width: none; padding: 0; overflow: hidden; margin-top: 10vh; }
+    .tiss-paleta-input { padding: var(--sp-2) var(--sp-3); border-bottom: 1px solid var(--border); }
+    .tiss-paleta-input .q-field__native { font-size: var(--fs-md); }
+    .tiss-paleta-lista { max-height: 340px; overflow-y: auto; padding: var(--sp-1); gap: 2px !important; flex-wrap: nowrap; }
+    .tiss-cmd-grupo { font-size: var(--fs-xs); font-weight: 600; color: var(--text-3); padding: var(--sp-2) var(--sp-2) var(--sp-1); }
+    .tiss-cmd-item {
+        display: flex; align-items: center; gap: var(--sp-2); width: 100%; min-height: 36px; padding: 0 var(--sp-2);
+        border-radius: var(--r-md); cursor: pointer; color: var(--text-1);
+        transition: background-color var(--t-fast) var(--ease);
+    }
+    .tiss-cmd-item:hover, .tiss-cmd-item.sel { background: var(--accent-soft); }
+    .tiss-cmd-detalhe { color: var(--text-3); font-size: var(--fs-xs); }
+    .tiss-cmd-vazio { padding: var(--sp-4); color: var(--text-3); text-align: center; }
+
+    /* ---------- 10. ACESSIBILIDADE E ROLAGEM ---------- */
+    /* Foco visível só pelo teclado: contorno de 2 px + halo suave */
+    body :is(.q-btn, .q-tab, .q-item, .tiss-hash-val, .tiss-cmd-item):focus-visible {
+        outline: 2px solid var(--accent); outline-offset: 2px; box-shadow: 0 0 0 5px var(--accent-ring);
+    }
+    body .q-btn.tiss-btn-primario:focus-visible { box-shadow: inset 0 1px 0 rgba(255,255,255,.22), 0 0 0 5px var(--accent-ring); }
     @media (prefers-reduced-motion: reduce) {
         *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
+        .skeleton::after { display: none; }
     }
-
-    /* Estado vazio (nenhum arquivo carregado) */
-    .tiss-vazio { flex: 1 1 0; color: var(--tiss-texto-suave); gap: 4px !important; }
-
-    /* Textos tipo Tailwind usados em avisos/rótulos — contraste no tema escuro */
-    body.body--dark .text-gray-600, body.body--dark .text-gray-500 { color: #94a3b8 !important; }
-    body.body--dark .text-red-700 { color: #f87171 !important; }
-    body.body--dark .text-green-700 { color: #4ade80 !important; }
-    body.body--dark .text-amber-700 { color: #fbbf24 !important; }
-
-    /* Barras de rolagem discretas */
-    .tiss-mensagens-corpo::-webkit-scrollbar, .tiss-diff-lista::-webkit-scrollbar,
+    .tiss-mensagens-corpo, .tiss-diff-lista, .tiss-paleta-lista, .tiss-editor .cm-scroller { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+    .tiss-mensagens-corpo::-webkit-scrollbar, .tiss-diff-lista::-webkit-scrollbar, .tiss-paleta-lista::-webkit-scrollbar,
     .tiss-editor .cm-scroller::-webkit-scrollbar { width: 10px; height: 10px; }
-    .tiss-mensagens-corpo::-webkit-scrollbar-thumb, .tiss-diff-lista::-webkit-scrollbar-thumb,
-    .tiss-editor .cm-scroller::-webkit-scrollbar-thumb { background: var(--tiss-borda); border-radius: 6px; border: 2px solid transparent; background-clip: content-box; }
+    .tiss-mensagens-corpo::-webkit-scrollbar-thumb, .tiss-diff-lista::-webkit-scrollbar-thumb, .tiss-paleta-lista::-webkit-scrollbar-thumb,
+    .tiss-editor .cm-scroller::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 6px; border: 2px solid transparent; background-clip: content-box; }
 </style>
 <script>
     // Aviso nativo do navegador ao tentar fechar/recarregar a aba com
@@ -1672,6 +1782,64 @@ ui.add_head_html("""
             }
         }
     }, true);
+    // Ctrl+K (ou Cmd+K): abre a paleta de comandos, com ou sem arquivo aberto.
+    window.addEventListener('keydown', function (e) {
+        if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'k' || e.key === 'K')) {
+            var paleta = document.getElementById('tiss-atalho-paleta');
+            if (paleta) {
+                e.preventDefault();
+                e.stopPropagation();
+                paleta.click();
+            }
+        }
+    }, true);
+
+    // ARRASTAR XMLs PARA QUALQUER LUGAR DA JANELA. Mostra um aviso "Solte os
+    // XMLs" durante o arraste e, ao soltar, entrega os arquivos .xml ao MESMO
+    // campo de envio que o botão "Enviar XML" usa (assim o processamento
+    // automático e o lote seguem exatamente o fluxo de sempre). Soltar sobre o
+    // próprio botão continua sendo tratado pelo componente de envio.
+    (function () {
+        var nivel = 0, aviso = null;
+        function temArquivos(e) {
+            return e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') !== -1;
+        }
+        function mostrar(sim) {
+            if (!aviso) {
+                aviso = document.createElement('div');
+                aviso.className = 'tiss-drop';
+                aviso.textContent = 'Solte os XMLs para enviar';
+                document.body.appendChild(aviso);
+            }
+            aviso.classList.toggle('ativo', sim);
+            document.body.classList.toggle('tiss-arrastando', sim);
+        }
+        window.addEventListener('dragenter', function (e) { if (temArquivos(e)) { nivel++; mostrar(true); } });
+        window.addEventListener('dragover', function (e) { if (temArquivos(e)) { e.preventDefault(); } });
+        window.addEventListener('dragleave', function (e) {
+            if (!temArquivos(e)) return;
+            nivel = Math.max(0, nivel - 1);
+            if (nivel === 0) mostrar(false);
+        });
+        window.addEventListener('drop', function (e) {
+            if (!temArquivos(e)) return;
+            nivel = 0;
+            mostrar(false);
+            var jaTratado = e.defaultPrevented;   // o componente de envio já cuidou deste drop
+            e.preventDefault();                   // impede o navegador de abrir o arquivo na aba
+            if (jaTratado) return;
+            var entrada = document.querySelector('.tiss-upload input[type=file]');
+            if (!entrada) return;
+            var lote = new DataTransfer();
+            Array.prototype.forEach.call(e.dataTransfer.files, function (f) {
+                if (/[.]xml$/i.test(f.name)) lote.items.add(f);
+            });
+            if (!lote.files.length) return;
+            entrada.files = lote.files;
+            entrada.dispatchEvent(new Event('change', { bubbles: true }));
+        });
+    })();
+
     window.addEventListener('beforeunload', function (e) {
         if (window.__validadorTissAlterado) {
             e.preventDefault();
@@ -1735,7 +1903,18 @@ def pagina_principal():
     # a página inteira ser recarregada (F5) — o que também descartaria
     # qualquer lote já processado. Este botão busca as tabelas de novo sem
     # precisar disso: os arquivos já processados continuam na tela.
-    def recarregar_regras():
+    async def recarregar_regras():
+        # Indicador de "carregando" no botão: ler o Google Sheets demora e
+        # bloqueia o servidor; os 50 ms de respiro deixam o navegador mostrar o
+        # indicador antes de a leitura começar.
+        botao_regras.props(add='loading')
+        await asyncio.sleep(0.05)
+        try:
+            _recarregar_regras_agora()
+        finally:
+            botao_regras.props(remove='loading')
+
+    def _recarregar_regras_agora():
         novos_dfs, novos_avisos = carregar_tabelas_do_sheets()
         estado['dfs'] = novos_dfs
         estado['avisos_sheets'] = novos_avisos
@@ -1780,12 +1959,133 @@ def pagina_principal():
     with barra_app:
         ui.space()
         painel_avisos_sheets()
-        ui.button(icon='sync', on_click=recarregar_regras).props('flat dense round size=sm') \
+        botao_regras = ui.button(icon='sync', on_click=recarregar_regras).props('flat dense round size=sm') \
             .tooltip('Recarregar regras da planilha')
+        with ui.button(on_click=lambda: abrir_paleta()).props('flat dense no-caps').classes('tiss-cmdk') \
+                .tooltip('Paleta de comandos (Ctrl+K)'):
+            ui.icon('search').classes('text-sm')
+            ui.label('Comandos').classes('text-xs')
+            ui.label('Ctrl K').classes('tiss-kbd')
+        # Botão invisível que o atalho global (JS no <head>) aciona pelo id.
+        ui.button(on_click=lambda: abrir_paleta()).props('id=tiss-atalho-paleta').style('display: none')
         with ui.row().classes('items-center gap-1 no-wrap'):
             ui.icon('light_mode').classes('text-sm')
-            ui.switch(value=estado['tema_escuro'], on_change=alternar_tema).props('color=primary dense').tooltip('Alternar entre tema claro e escuro')
+            chave_tema = ui.switch(value=estado['tema_escuro'], on_change=alternar_tema).props('color=primary dense').tooltip('Alternar entre tema claro e escuro')
             ui.icon('dark_mode').classes('text-sm')
+
+    # Paleta de comandos (Ctrl+K): só um atalho para funções que já existem.
+    abrir_paleta = construir_paleta(estado, lambda: [
+        ('Aplicação', 'Alternar tema claro/escuro', '', lambda: chave_tema.set_value(not chave_tema.value)),
+        ('Aplicação', 'Recarregar regras da planilha', '', recarregar_regras),
+        ('Aplicação', 'Limpar lista de arquivos', '', estado['limpar_lista']),
+    ])
+
+
+# ==========================================================================
+# PALETA DE COMANDOS (Ctrl+K) — busca rápida de ações e arquivos. Não cria
+# funcionalidade nova: cada item chama a MESMA função do botão correspondente.
+# ==========================================================================
+_ORDEM_GRUPOS_PALETA = ['Arquivo ativo', 'Editor', 'Abrir arquivo', 'Aplicação']
+
+
+def construir_paleta(estado, comandos_globais):
+    p = {'q': '', 'i': 0, 'itens': []}
+
+    def _norm(texto):
+        return unicodedata.normalize('NFD', texto).encode('ascii', 'ignore').decode().casefold()
+
+    def _abrir_arquivo(nome):
+        estado['arquivo_selecionado'] = nome
+        painel_resultados.refresh()
+
+    def _filtrados():
+        todos = []
+        for r in estado['resultados_lote']:
+            if not r.get('falha_total'):
+                todos.append(('Abrir arquivo', r['nome'], '', lambda n=r['nome']: _abrir_arquivo(n)))
+        todos.extend((estado.get('comandos_editor') or {}).values())
+        todos.extend(comandos_globais())
+        q = _norm(p['q'])
+        achados = [c for c in todos if q in _norm(f"{c[1]} {c[0]}")]
+        achados.sort(key=lambda c: _ORDEM_GRUPOS_PALETA.index(c[0]) if c[0] in _ORDEM_GRUPOS_PALETA else 99)
+        return achados
+
+    async def executar(funcao):
+        dialogo.close()
+        resultado = funcao()
+        if asyncio.iscoroutine(resultado):
+            await resultado
+
+    @ui.refreshable
+    def lista():
+        p['itens'] = _filtrados()
+        if not p['itens']:
+            ui.label('Nenhum comando encontrado.').classes('tiss-cmd-vazio')
+            return
+        grupo_atual = None
+        for idx, (grupo, rotulo, atalho, funcao) in enumerate(p['itens']):
+            if grupo != grupo_atual:
+                ui.label(grupo).classes('tiss-cmd-grupo')
+                grupo_atual = grupo
+            with ui.element('div').classes('tiss-cmd-item' + (' sel' if idx == p['i'] else '')) \
+                    .props('role=option tabindex=-1') as item:
+                ui.label(rotulo).classes('flex-grow truncate')
+                if atalho:
+                    ui.label(atalho).classes('tiss-kbd')
+            item.on('click', lambda _e=None, f=funcao: executar(f))
+
+    with ui.dialog().props('position=top') as dialogo, ui.card().classes('tiss-paleta'):
+        campo = ui.input(placeholder='Digite um comando ou o nome de um arquivo') \
+            .props('dense borderless autofocus').classes('tiss-paleta-input w-full')
+        with ui.column().classes('tiss-paleta-lista w-full').props('role=listbox'):
+            lista()
+
+    def mover(delta):
+        n = len(p['itens'])
+        if n:
+            p['i'] = (p['i'] + delta) % n
+            lista.refresh()
+            ui.run_javascript("document.querySelector('.tiss-cmd-item.sel')?.scrollIntoView({block: 'nearest'})")
+
+    async def confirmar(_e=None):
+        if p['itens']:
+            await executar(p['itens'][p['i']][3])
+
+    def ao_digitar(e):
+        p['q'] = e.value or ''
+        p['i'] = 0
+        lista.refresh()
+
+    campo.on_value_change(ao_digitar)
+    campo.on('keydown.down.prevent', lambda _e=None: mover(1))
+    campo.on('keydown.up.prevent', lambda _e=None: mover(-1))
+    campo.on('keydown.enter', confirmar)
+
+    def abrir():
+        p['q'] = ''
+        p['i'] = 0
+        campo.value = ''
+        lista.refresh()
+        dialogo.open()
+    return abrir
+
+
+def _construir_esqueleto():
+    """Placeholder com brilho (shimmer), mostrado por cima da área de trabalho
+    enquanto um lote é processado. Usa só as classes utilitárias .skeleton*."""
+    with ui.column().classes('tiss-esqueleto').props('role=status aria-label="Processando arquivos"') as esq:
+        with ui.row().classes('w-full items-center no-wrap gap-2'):
+            for largura in (150, 190, 130):
+                ui.element('div').classes('skeleton skeleton-block').style(f'width: {largura}px; height: 32px')
+        with ui.row().classes('w-full items-center no-wrap gap-2'):
+            ui.element('div').classes('skeleton skeleton-block').style('width: 150px; height: 36px')
+            ui.element('div').classes('skeleton skeleton-block').style('width: 235px; height: 36px')
+        with ui.column().classes('w-full gap-2 p-4 flex-grow') \
+                .style('border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface-1)'):
+            for largura in (62, 48, 71, 40, 66, 55, 34, 69, 58, 45, 63, 38, 52, 67):
+                ui.element('div').classes('skeleton skeleton-text').style(f'width: {largura}%')
+    esq.visible = False
+    return esq
 
 
 # ==========================================================================
@@ -1815,6 +2115,18 @@ def construir_aba_processamento(estado, editores, barra_app, corpo):
         async def iniciar_correcao():
             if not estado['arquivos_pendentes']:
                 return
+            # Mostra o esqueleto e dá ~50 ms ao navegador para desenhá-lo ANTES
+            # do processamento pesado (que ocupa o servidor). As regras de
+            # processamento em si ficam exatamente como estavam.
+            esqueleto.visible = True
+            try:
+                await asyncio.sleep(0.05)
+                await _processar_pendentes()
+            finally:
+                esqueleto.visible = False
+                barra.visible = False
+
+        async def _processar_pendentes():
             barra.visible = True
             resultados = []
             pendentes = estado['arquivos_pendentes']
@@ -1858,6 +2170,7 @@ def construir_aba_processamento(estado, editores, barra_app, corpo):
                     resultado['falha_total'] = str(e)
                     resultados.append(resultado)
                 barra.set_value((i + 1) / len(pendentes))
+                await asyncio.sleep(0)  # deixa a barra de progresso atualizar entre um arquivo e outro
             # Junta os arquivos deste lote aos que já estavam na lista, em vez
             # de substituir tudo. Se um arquivo com o mesmo nome já tiver sido
             # processado antes, a versão mais nova (deste clique) substitui a
@@ -1904,6 +2217,7 @@ def construir_aba_processamento(estado, editores, barra_app, corpo):
                     ui.button('Limpar mesmo assim', color='negative', on_click=confirmar_limpeza)
             dialogo_limpar.open()
 
+        estado['limpar_lista'] = limpar_lista_processados
         ui.button(icon='delete_sweep', on_click=limpar_lista_processados).props('flat dense round size=sm') \
             .tooltip('Limpar lista de arquivos processados')
         barra = ui.linear_progress(value=0, show_value=False).props('size=3px').classes('tiss-progress')
@@ -1911,17 +2225,20 @@ def construir_aba_processamento(estado, editores, barra_app, corpo):
 
     with corpo:
         painel_resultados(estado, editores)
+        esqueleto = _construir_esqueleto()
 
 
 @ui.refreshable
 def painel_resultados(estado, editores):
+    estado['comandos_editor'] = {}  # a paleta de comandos (Ctrl+K) lê estes atalhos
     resultados = estado['resultados_lote']
     if not resultados:
         with ui.column().classes('tiss-vazio w-full items-center justify-center'):
-            ui.icon('upload_file').classes('text-5xl')
+            with ui.element('div').classes('tiss-vazio-icone'):
+                ui.icon('upload_file')
             ui.label('Envie os XMLs para começar').classes('text-base font-semibold')
             ui.label('A correção roda automaticamente assim que os arquivos chegam.').classes('text-sm')
-            botao_vazio = ui.button('Selecionar XMLs', icon='upload_file').props('unelevated no-caps color=primary').classes('mt-2')
+            botao_vazio = ui.button('Selecionar XMLs', icon='upload_file').props('unelevated no-caps color=primary').classes('mt-2 tiss-btn-primario')
             if estado.get('upload_id'):
                 # js_handler: o seletor abre no próprio clique (sem ida e volta ao servidor).
                 botao_vazio.on('click', js_handler=f"() => getElement({estado['upload_id']}).$refs.qRef.pickFiles()")
@@ -1983,6 +2300,9 @@ def painel_resultados(estado, editores):
                         ui.button('Fechar mesmo assim', color='negative', on_click=confirmar)
             dialogo_fechar.open()
 
+        estado['comandos_editor']['fechar'] = ('Arquivo ativo', f'Fechar {valor_inicial}', '', lambda n=valor_inicial: fechar_arquivo(n))
+        pontos_abas = {}
+
         # Linha de abas: uma aba por arquivo (clique para trocar). Com muitos
         # arquivos a linha rola para o lado. O botão de ZIP fica no fim dela.
         with ui.row().classes('tiss-abasbar w-full'):
@@ -1991,9 +2311,14 @@ def painel_resultados(estado, editores):
                     .classes('tiss-abas'):
                 for nome_aba in nomes:
                     with ui.tab(nome_aba, label=nome_aba) as aba:
+                        # Ponto de "alterações não salvas" (atualizado ao vivo pelo editor).
+                        ed_aba = editores.get((estado['lote_id'], nome_aba))
+                        ponto = ui.element('span').classes('tiss-aba-ponto').tooltip('Alterações não salvas')
+                        ponto.set_visibility(bool(ed_aba) and ed_aba['texto_atual'] != ed_aba['texto_base'])
+                        pontos_abas[nome_aba] = ponto
                         # 'click.stop': o clique no "x" não pode também selecionar a aba.
                         ui.button(icon='close').props('flat dense round size=xs') \
-                            .classes('tiss-aba-fechar').tooltip('Fechar este arquivo') \
+                            .classes('tiss-aba-fechar tiss-mini').tooltip('Fechar este arquivo') \
                             .on('click.stop', lambda e, n=nome_aba: fechar_arquivo(n))
                     if len(nome_aba) > 28:
                         aba.tooltip(nome_aba)
@@ -2005,6 +2330,7 @@ def painel_resultados(estado, editores):
                         for r in sucesso:
                             zf.writestr(f"PRONTO_{r['nome']}", r['xml_bytes'])
                     ui.download.content(buffer.getvalue(), 'XMLS_CORRIGIDOS.zip', media_type='application/zip')
+                estado['comandos_editor']['zip'] = ('Arquivo ativo', 'Baixar todos os XMLs (.zip)', '', baixar_zip)
                 ui.button(icon='folder_zip', on_click=baixar_zip).props('flat dense round size=sm') \
                     .tooltip('Baixar todos os XMLs corrigidos (.ZIP)')
 
@@ -2013,7 +2339,7 @@ def painel_resultados(estado, editores):
         with ui.row().classes('tiss-controlbar w-full') as barra_controle:
             pass
 
-        construir_editor_xml(estado, editores, resultado, barra_controle)
+        construir_editor_xml(estado, editores, resultado, barra_controle, ponto_aba=pontos_abas.get(valor_inicial))
 
 
 # ==========================================================================
@@ -2078,7 +2404,7 @@ def _js_navegar_ocorrencia(id_editor, termo, direcao):
                   .replace('__DIRECAO__', str(int(direcao))))
 
 
-def construir_editor_xml(estado, editores, resultado, barra_controle):
+def construir_editor_xml(estado, editores, resultado, barra_controle, ponto_aba=None):
     nome_arquivo = resultado['nome']
     lote_id = estado['lote_id']
     chave = (lote_id, nome_arquivo)
@@ -2184,12 +2510,12 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
         with ui.input(label='Senha', value=_extrair_primeiro(_PADRAO_SENHA, ed['texto_atual']) or '') \
                 .props('dense outlined').classes('tiss-campo tiss-campo-senha') as campo_senha:
             with campo_senha.add_slot('append'):
-                ui.button(icon='content_copy').props('flat dense round size=xs') \
+                ui.button(icon='content_copy').props('flat dense round size=xs').classes('tiss-mini') \
                     .tooltip('Copiar').on('click', lambda: _copiar_campo(campo_senha.value))
         with ui.input(label='Número da Carteira', value=_extrair_primeiro(_PADRAO_CARTEIRA, ed['texto_atual']) or '') \
                 .props('dense outlined').classes('tiss-campo tiss-campo-carteira') as campo_carteira:
             with campo_carteira.add_slot('append'):
-                ui.button(icon='content_copy').props('flat dense round size=xs') \
+                ui.button(icon='content_copy').props('flat dense round size=xs').classes('tiss-mini') \
                     .tooltip('Copiar').on('click', lambda: _copiar_campo(campo_carteira.value))
         campo_senha.props('debounce=500')
         campo_carteira.props('debounce=500')
@@ -2206,7 +2532,7 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
             botao_recarregar = ui.button(icon='refresh').props('flat dense round size=sm').tooltip('Recarregar (descarta alterações)')
             botao_copiar = ui.button(icon='content_copy').props('flat dense round size=sm').tooltip('Copiar código-fonte')
         botao_baixar = ui.button('Baixar XML', icon='download').props('unelevated dense no-caps color=primary id=tiss-btn-baixar') \
-            .classes('tiss-btn-baixar').tooltip('Validar, recalcular hash e baixar XML (Ctrl+S)')
+            .classes('tiss-btn-primario').tooltip('Validar, recalcular hash e baixar XML (Ctrl+S)')
 
     # Barra de Localizar/Substituir (oculta até o botão de busca ser clicado)
     with ui.row().classes('w-full items-center gap-2 no-wrap tiss-barra-localizar').props('id=tiss-barra-localizar') as barra_localizar:
@@ -2268,7 +2594,7 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
             with ui.row().classes('w-full items-center justify-between no-wrap'):
                 ui.label('Alterações manuais pendentes').classes('tiss-diff-titulo')
                 ui.button(icon='close', on_click=lambda: expansao_alteracoes.set_visibility(False)) \
-                    .props('flat dense round size=xs').tooltip('Ocultar painel')
+                    .props('flat dense round size=xs').classes('tiss-mini').tooltip('Ocultar painel')
             painel_alteracoes = ui.column().classes('tiss-diff-lista w-full gap-0')
         expansao_alteracoes.set_visibility(False)
 
@@ -2308,7 +2634,7 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
     carteira_encontrada = _extrair_primeiro(_PADRAO_CARTEIRA, ed['texto_original'])
 
     _msg_aberto = estado.get('mensagens_aberto')  # None = ainda não decidido (usa a altura da janela)
-    with ui.expansion(value=True if _msg_aberto is None else _msg_aberto).props('dense switch-toggle-side expand-icon-toggle').classes('tiss-mensagens w-full') as expansao_mensagens:
+    with ui.expansion(value=True if _msg_aberto is None else _msg_aberto).props('dense switch-toggle-side expand-icon-toggle duration=180').classes('tiss-mensagens w-full') as expansao_mensagens:
         with expansao_mensagens.add_slot('header'):
             with ui.row().classes('items-center no-wrap w-full gap-3'):
                 ui.label('Mensagens').classes('tiss-mensagens-titulo')
@@ -2467,6 +2793,8 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
         alterado = ed['texto_atual'] != ed['texto_base']
         label_arquivo.text = f"{nome_arquivo} *" if alterado else nome_arquivo
         label_arquivo.classes(replace='tiss-file-name modificado' if alterado else 'tiss-file-name')
+        if ponto_aba is not None:
+            ponto_aba.set_visibility(alterado)
 
         botao_desfazer.set_enabled(bool(ed['historico']))
         botao_refazer.set_enabled(bool(ed['futuro']))
@@ -2718,6 +3046,17 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
         definir_conteudo(padrao.sub(lambda _m: novo, ed['texto_atual']))
         resultado_busca.text = f"{qtd} {_plural(qtd, 'ocorrência substituída', 'ocorrências substituídas')}."
     botao_sub_todos.on('click', substituir_todos)
+
+    # Atalhos para a paleta de comandos (Ctrl+K): cada um chama a função do botão.
+    estado['comandos_editor'].update({
+        'baixar': ('Arquivo ativo', 'Baixar XML', 'Ctrl+S', baixar),
+        'validar': ('Arquivo ativo', 'Validar XML', '', validar),
+        'recarregar': ('Arquivo ativo', 'Recarregar arquivo (descarta alterações)', '', recarregar),
+        'localizar': ('Editor', 'Localizar e substituir', 'Ctrl+F', abrir_barra_localizar),
+        'desfazer': ('Editor', 'Desfazer', '', desfazer),
+        'refazer': ('Editor', 'Refazer', '', refazer),
+        'copiar': ('Editor', 'Copiar código-fonte', '', copiar),
+    })
 
     atualizar_interface()
 
