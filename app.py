@@ -363,6 +363,100 @@ def corrigir_tipo_atendimento_sadt(guia, auditoria):
     auditoria['tipo_atendimento'].extend(logs)
     return len(logs)
 
+# ----------------------------------------------------------------------------
+# REPARO DE TAGS VAZIAS / AUSENTES
+# Alguns arquivos chegam com tags "quebradas": a tag aparece vazia/autofechada
+# (<ans:tag/>) ou simplesmente não existe. Aqui ficam as regras de reparo.
+# ----------------------------------------------------------------------------
+# {tag que chega vazia: tag da MESMA guia de onde o valor é copiado}.
+# Para incluir outra tag, é só acrescentar uma linha neste dicionário.
+PREENCHER_TAGS_VAZIAS = {
+    'numeroGuiaSolicitacaoInternacao': 'numeroGuiaOperadora',
+}
+# <dataValidadeSenha> ausente (ou vazia) = <dataAutorizacao> + este número de dias.
+DIAS_VALIDADE_SENHA = 60
+
+
+def _tag_vazia(elem):
+    """True se a tag não tem texto nem filhos (<ans:tag/> ou <ans:tag></ans:tag>)."""
+    return len(elem) == 0 and not (elem.text or '').strip()
+
+
+def reparar_tags_guia(guia, auditoria):
+    """Repara, em UMA guia: (1) tags vazias listadas em PREENCHER_TAGS_VAZIAS,
+    copiando o valor da tag de origem da mesma guia (se ela existir); e
+    (2) <dataValidadeSenha> ausente ou vazia, calculada como <dataAutorizacao>
+    + DIAS_VALIDADE_SENHA dias. Roda dentro do laço de guias, depois da checagem
+    de blindagem (guias de prestador protegido não são alteradas)."""
+    logs, avisos = [], []
+    num_guia = guia.find('.//ans:cabecalhoGuia/ans:numeroGuiaPrestador', NS)
+    ref = f" {num_guia.text.strip()}" if num_guia is not None and num_guia.text and num_guia.text.strip() else ""
+
+    # (1) tags vazias -> valor copiado de outra tag da mesma guia
+    for tag_destino, tag_origem in PREENCHER_TAGS_VAZIAS.items():
+        for elem in guia.findall(f'.//ans:{tag_destino}', NS):
+            if not _tag_vazia(elem):
+                continue
+            origem = guia.find(f'.//ans:dadosAutorizacao/ans:{tag_origem}', NS)
+            if origem is None:
+                origem = guia.find(f'.//ans:{tag_origem}', NS)
+            valor = origem.text.strip() if origem is not None and origem.text and origem.text.strip() else ''
+            if valor:
+                elem.text = valor
+                logs.append(f"Guia{ref}: Tag <{tag_destino}> estava vazia e foi preenchida com <{tag_origem}> ({valor})")
+            else:
+                avisos.append(f"Guia{ref}: Tag <{tag_destino}> está vazia e a guia não tem <{tag_origem}> para copiar.")
+
+    # (2) <dataValidadeSenha> ausente ou vazia
+    for dados_aut in guia.findall('.//ans:dadosAutorizacao', NS):
+        validade = dados_aut.find('ans:dataValidadeSenha', NS)
+        if validade is not None and not _tag_vazia(validade):
+            continue
+        data_aut = dados_aut.find('ans:dataAutorizacao', NS)
+        texto_data = (data_aut.text or '').strip()[:10] if data_aut is not None else ''
+        try:
+            nova = (datetime.strptime(texto_data, '%Y-%m-%d') + timedelta(days=DIAS_VALIDADE_SENHA)).strftime('%Y-%m-%d')
+        except ValueError:
+            avisos.append(f"Guia{ref}: Tag <dataValidadeSenha> ausente e não foi possível calculá-la (<dataAutorizacao> inválida ou ausente).")
+            continue
+        if validade is not None:
+            validade.text = nova
+            acao = "estava vazia e foi preenchida"
+        else:
+            validade = ET.Element(ans_tag('dataValidadeSenha'))
+            validade.text = nova
+            # Posição do esquema TISS: logo depois de <senha> (ou, sem ela, de <dataAutorizacao>).
+            anterior = dados_aut.find('ans:senha', NS)
+            if anterior is None:
+                anterior = data_aut
+            dados_aut.insert(list(dados_aut).index(anterior) + 1, validade)
+            validade.tail = anterior.tail  # mantém a quebra de linha/indentação do arquivo
+            acao = "estava ausente e foi incluída"
+        logs.append(f"Guia{ref}: Tag <dataValidadeSenha> {acao}: {nova} ({DIAS_VALIDADE_SENHA} dias após a autorização de {texto_data})")
+
+    auditoria.setdefault('tags_reparadas', []).extend(logs)
+    auditoria['erros'].extend(avisos)
+    return len(logs)
+
+
+def avisar_tags_vazias(guias, auditoria):
+    """Só AVISA (não altera nada) sobre outras tags vazias, para as quais não há
+    regra de preenchimento. Agrupa por nome de tag para não lotar a lista."""
+    ja_tratadas = set(PREENCHER_TAGS_VAZIAS) | {'dataValidadeSenha'}
+    encontradas = {}  # nome da tag -> [referências das guias]
+    for guia in guias:
+        num_guia = guia.find('.//ans:cabecalhoGuia/ans:numeroGuiaPrestador', NS)
+        ref = num_guia.text.strip() if num_guia is not None and num_guia.text and num_guia.text.strip() else '?'
+        for elem in guia.iter():
+            nome = elem.tag.split('}')[-1] if isinstance(elem.tag, str) else ''
+            if nome and nome not in ja_tratadas and _tag_vazia(elem):
+                encontradas.setdefault(nome, []).append(ref)
+    for nome, refs in encontradas.items():
+        exemplos = ', '.join(list(dict.fromkeys(refs))[:5])  # até 5 guias, sem repetir
+        auditoria['erros'].append(
+            f"Tag <{nome}> vazia em {len(refs)} ocorrência(s) (guias: {exemplos}). Não há regra de preenchimento; confira o arquivo.")
+
+
 def _somar_segundos(hora_str, segundos):
     """Soma 'segundos' a um horário HH:MM:SS, com rollover natural de minuto/hora
     (ex: 23:59:59 + 2s = 00:00:01)."""
@@ -679,7 +773,7 @@ def processar_xml_tiss(arquivo_xml, dfs):
         'cbos': [], 'medicos_trocados': [], 'itens': [], 'anvisa': [], 'unidades': [], 'oxigenio': [],
         'conveniados_excluidos': [], 'procedimentos_ajustados': [], 'guias_blindadas': [], 'erros': [],
         'valores_negativos': [], 'motivo_encerramento': [], 'horarios_duplicados': [], 'fragmentados': [],
-        'tipo_atendimento': []
+        'tipo_atendimento': [], 'tags_reparadas': []
     }
     
     arquivo_xml.seek(0)
@@ -784,6 +878,7 @@ def processar_xml_tiss(arquivo_xml, dfs):
     guias_int = [(g, 'internacao') for g in root.findall('.//ans:guiaResumoInternacao', NS)]
     guias_sadt = [(g, 'sadt') for g in root.findall('.//ans:guiaSP-SADT', NS)]
     todas_guias = guias_int + guias_sadt
+    avisar_tags_vazias([g for g, _ in todas_guias], auditoria)
 
     for indice_guia, (guia, tipo_guia) in enumerate(todas_guias, start=1):
         try:
@@ -799,6 +894,9 @@ def processar_xml_tiss(arquivo_xml, dfs):
                 carteira_elem = guia.find('.//ans:dadosBeneficiario/ans:numeroCarteira', NS)
                 numero_carteira = limpar_numero(carteira_elem.text) if carteira_elem is not None and carteira_elem.text else ""
                 eh_unimed_0014 = identificar_plano_pela_carteira(numero_carteira) == '0014'
+
+            # --- REPARO DE TAGS VAZIAS / AUSENTES (numeroGuiaSolicitacaoInternacao, dataValidadeSenha) ---
+            reparar_tags_guia(guia, auditoria)
 
             # --- TIPO DE ATENDIMENTO EM GUIAS SADT (05 ➔ 02) ---
             if tipo_guia == 'sadt':
@@ -1338,6 +1436,7 @@ TITULOS_AMIGAVEIS_AUDITORIA = {
     'valores_negativos': 'Valores Negativos Corrigidos',
     'motivo_encerramento': f"Motivo de Encerramento ({', '.join(str(c) for c in MOTIVOS_ENCERRAMENTO_PARA_12)} ➔ 12)",
     'tipo_atendimento': 'Tipo de Atendimento SADT (05 ➔ 02)',
+    'tags_reparadas': 'Tags Vazias ou Ausentes Reparadas',
     'horarios_duplicados': 'Horários Escalonados (Anti-Duplicidade)',
     'fragmentados': 'Procedimentos Fragmentados para Outro Prestador'
 }
@@ -1355,7 +1454,7 @@ ui.add_head_html("""
        SISTEMA DE DESIGN — Validador TISS
        1 Tokens · 2 Base · 3 Botões e campos · 4 Barras e abas · 5 Editor
        6 Painéis · 7 Avisos, menus e diálogos · 8 Estados (vazio, esqueleto,
-       arrastar) · 9 Paleta de comandos · 10 Acessibilidade
+       arrastar) · 9 Acessibilidade
        Sem @layer de propósito: o CSS do Quasar não usa camadas e, por isso,
        sempre venceria regras colocadas dentro de uma camada.
        ===================================================================== */
@@ -1522,17 +1621,6 @@ ui.add_head_html("""
     .tiss-brand-icon { color: var(--accent); font-size: 20px; }
     .tiss-app-name { font-weight: 650; color: var(--text-1); font-size: var(--fs-md); letter-spacing: -0.005em; margin-right: var(--sp-1); }
     .tiss-progress { position: absolute !important; left: 0; right: 0; bottom: -1px; width: auto !important; }
-    /* Atalho da paleta de comandos na barra superior */
-    .nicegui-content .q-btn.tiss-cmdk {
-        border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface-1);
-        color: var(--text-3); min-height: 32px; padding: 0 var(--sp-2); box-shadow: var(--inset-hi);
-    }
-    .nicegui-content .q-btn.tiss-cmdk:hover { border-color: var(--border-strong); color: var(--text-1); background: var(--surface-2); }
-    .tiss-kbd {
-        font-family: var(--mono); font-size: var(--fs-xs); color: var(--text-3);
-        border: 1px solid var(--border); border-radius: var(--r-sm); padding: 0 6px; background: var(--surface-2);
-        line-height: 1.5; white-space: nowrap;
-    }
     /* Upload compacto: só o cabeçalho do q-uploader, como um botão de barra */
     .tiss-upload.q-uploader {
         width: auto; max-width: none; min-width: 0; box-shadow: none; background: transparent;
@@ -1705,24 +1793,9 @@ ui.add_head_html("""
     @keyframes tiss-entra-direita { from { opacity: 0; transform: translateX(10px); } to { opacity: 1; transform: none; } }
     @keyframes tiss-entra-baixo { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 
-    /* ---------- 9. PALETA DE COMANDOS (Ctrl+K) ---------- */
-    .tiss-paleta.q-card { width: min(560px, 92vw); max-width: none; padding: 0; overflow: hidden; margin-top: 10vh; }
-    .tiss-paleta-input { padding: var(--sp-2) var(--sp-3); border-bottom: 1px solid var(--border); }
-    .tiss-paleta-input .q-field__native { font-size: var(--fs-md); }
-    .tiss-paleta-lista { max-height: 340px; overflow-y: auto; padding: var(--sp-1); gap: 2px !important; flex-wrap: nowrap; }
-    .tiss-cmd-grupo { font-size: var(--fs-xs); font-weight: 600; color: var(--text-3); padding: var(--sp-2) var(--sp-2) var(--sp-1); }
-    .tiss-cmd-item {
-        display: flex; align-items: center; gap: var(--sp-2); width: 100%; min-height: 36px; padding: 0 var(--sp-2);
-        border-radius: var(--r-md); cursor: pointer; color: var(--text-1);
-        transition: background-color var(--t-fast) var(--ease);
-    }
-    .tiss-cmd-item:hover, .tiss-cmd-item.sel { background: var(--accent-soft); }
-    .tiss-cmd-detalhe { color: var(--text-3); font-size: var(--fs-xs); }
-    .tiss-cmd-vazio { padding: var(--sp-4); color: var(--text-3); text-align: center; }
-
-    /* ---------- 10. ACESSIBILIDADE E ROLAGEM ---------- */
+    /* ---------- 9. ACESSIBILIDADE E ROLAGEM ---------- */
     /* Foco visível só pelo teclado: contorno de 2 px + halo suave */
-    body :is(.q-btn, .q-tab, .q-item, .tiss-hash-val, .tiss-cmd-item):focus-visible {
+    body :is(.q-btn, .q-tab, .q-item, .tiss-hash-val):focus-visible {
         outline: 2px solid var(--accent); outline-offset: 2px; box-shadow: 0 0 0 5px var(--accent-ring);
     }
     body .q-btn.tiss-btn-primario:focus-visible { box-shadow: inset 0 1px 0 rgba(255,255,255,.22), 0 0 0 5px var(--accent-ring); }
@@ -1730,10 +1803,10 @@ ui.add_head_html("""
         *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
         .skeleton::after { display: none; }
     }
-    .tiss-mensagens-corpo, .tiss-diff-lista, .tiss-paleta-lista, .tiss-editor .cm-scroller { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
-    .tiss-mensagens-corpo::-webkit-scrollbar, .tiss-diff-lista::-webkit-scrollbar, .tiss-paleta-lista::-webkit-scrollbar,
+    .tiss-mensagens-corpo, .tiss-diff-lista, .tiss-editor .cm-scroller { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+    .tiss-mensagens-corpo::-webkit-scrollbar, .tiss-diff-lista::-webkit-scrollbar,
     .tiss-editor .cm-scroller::-webkit-scrollbar { width: 10px; height: 10px; }
-    .tiss-mensagens-corpo::-webkit-scrollbar-thumb, .tiss-diff-lista::-webkit-scrollbar-thumb, .tiss-paleta-lista::-webkit-scrollbar-thumb,
+    .tiss-mensagens-corpo::-webkit-scrollbar-thumb, .tiss-diff-lista::-webkit-scrollbar-thumb,
     .tiss-editor .cm-scroller::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 6px; border: 2px solid transparent; background-clip: content-box; }
 </style>
 <script>
@@ -1782,18 +1855,6 @@ ui.add_head_html("""
             }
         }
     }, true);
-    // Ctrl+K (ou Cmd+K): abre a paleta de comandos, com ou sem arquivo aberto.
-    window.addEventListener('keydown', function (e) {
-        if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'k' || e.key === 'K')) {
-            var paleta = document.getElementById('tiss-atalho-paleta');
-            if (paleta) {
-                e.preventDefault();
-                e.stopPropagation();
-                paleta.click();
-            }
-        }
-    }, true);
-
     // ARRASTAR XMLs PARA QUALQUER LUGAR DA JANELA. Mostra um aviso "Solte os
     // XMLs" durante o arraste e, ao soltar, entrega os arquivos .xml ao MESMO
     // campo de envio que o botão "Enviar XML" usa (assim o processamento
@@ -1961,113 +2022,10 @@ def pagina_principal():
         painel_avisos_sheets()
         botao_regras = ui.button(icon='sync', on_click=recarregar_regras).props('flat dense round size=sm') \
             .tooltip('Recarregar regras da planilha')
-        with ui.button(on_click=lambda: abrir_paleta()).props('flat dense no-caps').classes('tiss-cmdk') \
-                .tooltip('Paleta de comandos (Ctrl+K)'):
-            ui.icon('search').classes('text-sm')
-            ui.label('Comandos').classes('text-xs')
-            ui.label('Ctrl K').classes('tiss-kbd')
-        # Botão invisível que o atalho global (JS no <head>) aciona pelo id.
-        ui.button(on_click=lambda: abrir_paleta()).props('id=tiss-atalho-paleta').style('display: none')
         with ui.row().classes('items-center gap-1 no-wrap'):
             ui.icon('light_mode').classes('text-sm')
-            chave_tema = ui.switch(value=estado['tema_escuro'], on_change=alternar_tema).props('color=primary dense').tooltip('Alternar entre tema claro e escuro')
+            ui.switch(value=estado['tema_escuro'], on_change=alternar_tema).props('color=primary dense').tooltip('Alternar entre tema claro e escuro')
             ui.icon('dark_mode').classes('text-sm')
-
-    # Paleta de comandos (Ctrl+K): só um atalho para funções que já existem.
-    abrir_paleta = construir_paleta(estado, lambda: [
-        ('Aplicação', 'Alternar tema claro/escuro', '', lambda: chave_tema.set_value(not chave_tema.value)),
-        ('Aplicação', 'Recarregar regras da planilha', '', recarregar_regras),
-        ('Aplicação', 'Limpar lista de arquivos', '', estado['limpar_lista']),
-    ])
-
-
-# ==========================================================================
-# PALETA DE COMANDOS (Ctrl+K) — busca rápida de ações e arquivos. Não cria
-# funcionalidade nova: cada item chama a MESMA função do botão correspondente.
-# ==========================================================================
-_ORDEM_GRUPOS_PALETA = ['Arquivo ativo', 'Editor', 'Abrir arquivo', 'Aplicação']
-
-
-def construir_paleta(estado, comandos_globais):
-    p = {'q': '', 'i': 0, 'itens': []}
-
-    def _norm(texto):
-        return unicodedata.normalize('NFD', texto).encode('ascii', 'ignore').decode().casefold()
-
-    def _abrir_arquivo(nome):
-        estado['arquivo_selecionado'] = nome
-        painel_resultados.refresh()
-
-    def _filtrados():
-        todos = []
-        for r in estado['resultados_lote']:
-            if not r.get('falha_total'):
-                todos.append(('Abrir arquivo', r['nome'], '', lambda n=r['nome']: _abrir_arquivo(n)))
-        todos.extend((estado.get('comandos_editor') or {}).values())
-        todos.extend(comandos_globais())
-        q = _norm(p['q'])
-        achados = [c for c in todos if q in _norm(f"{c[1]} {c[0]}")]
-        achados.sort(key=lambda c: _ORDEM_GRUPOS_PALETA.index(c[0]) if c[0] in _ORDEM_GRUPOS_PALETA else 99)
-        return achados
-
-    async def executar(funcao):
-        dialogo.close()
-        resultado = funcao()
-        if asyncio.iscoroutine(resultado):
-            await resultado
-
-    @ui.refreshable
-    def lista():
-        p['itens'] = _filtrados()
-        if not p['itens']:
-            ui.label('Nenhum comando encontrado.').classes('tiss-cmd-vazio')
-            return
-        grupo_atual = None
-        for idx, (grupo, rotulo, atalho, funcao) in enumerate(p['itens']):
-            if grupo != grupo_atual:
-                ui.label(grupo).classes('tiss-cmd-grupo')
-                grupo_atual = grupo
-            with ui.element('div').classes('tiss-cmd-item' + (' sel' if idx == p['i'] else '')) \
-                    .props('role=option tabindex=-1') as item:
-                ui.label(rotulo).classes('flex-grow truncate')
-                if atalho:
-                    ui.label(atalho).classes('tiss-kbd')
-            item.on('click', lambda _e=None, f=funcao: executar(f))
-
-    with ui.dialog().props('position=top') as dialogo, ui.card().classes('tiss-paleta'):
-        campo = ui.input(placeholder='Digite um comando ou o nome de um arquivo') \
-            .props('dense borderless autofocus').classes('tiss-paleta-input w-full')
-        with ui.column().classes('tiss-paleta-lista w-full').props('role=listbox'):
-            lista()
-
-    def mover(delta):
-        n = len(p['itens'])
-        if n:
-            p['i'] = (p['i'] + delta) % n
-            lista.refresh()
-            ui.run_javascript("document.querySelector('.tiss-cmd-item.sel')?.scrollIntoView({block: 'nearest'})")
-
-    async def confirmar(_e=None):
-        if p['itens']:
-            await executar(p['itens'][p['i']][3])
-
-    def ao_digitar(e):
-        p['q'] = e.value or ''
-        p['i'] = 0
-        lista.refresh()
-
-    campo.on_value_change(ao_digitar)
-    campo.on('keydown.down.prevent', lambda _e=None: mover(1))
-    campo.on('keydown.up.prevent', lambda _e=None: mover(-1))
-    campo.on('keydown.enter', confirmar)
-
-    def abrir():
-        p['q'] = ''
-        p['i'] = 0
-        campo.value = ''
-        lista.refresh()
-        dialogo.open()
-    return abrir
 
 
 def _construir_esqueleto():
@@ -2217,7 +2175,6 @@ def construir_aba_processamento(estado, editores, barra_app, corpo):
                     ui.button('Limpar mesmo assim', color='negative', on_click=confirmar_limpeza)
             dialogo_limpar.open()
 
-        estado['limpar_lista'] = limpar_lista_processados
         ui.button(icon='delete_sweep', on_click=limpar_lista_processados).props('flat dense round size=sm') \
             .tooltip('Limpar lista de arquivos processados')
         barra = ui.linear_progress(value=0, show_value=False).props('size=3px').classes('tiss-progress')
@@ -2230,7 +2187,6 @@ def construir_aba_processamento(estado, editores, barra_app, corpo):
 
 @ui.refreshable
 def painel_resultados(estado, editores):
-    estado['comandos_editor'] = {}  # a paleta de comandos (Ctrl+K) lê estes atalhos
     resultados = estado['resultados_lote']
     if not resultados:
         with ui.column().classes('tiss-vazio w-full items-center justify-center'):
@@ -2300,7 +2256,6 @@ def painel_resultados(estado, editores):
                         ui.button('Fechar mesmo assim', color='negative', on_click=confirmar)
             dialogo_fechar.open()
 
-        estado['comandos_editor']['fechar'] = ('Arquivo ativo', f'Fechar {valor_inicial}', '', lambda n=valor_inicial: fechar_arquivo(n))
         pontos_abas = {}
 
         # Linha de abas: uma aba por arquivo (clique para trocar). Com muitos
@@ -2330,7 +2285,6 @@ def painel_resultados(estado, editores):
                         for r in sucesso:
                             zf.writestr(f"PRONTO_{r['nome']}", r['xml_bytes'])
                     ui.download.content(buffer.getvalue(), 'XMLS_CORRIGIDOS.zip', media_type='application/zip')
-                estado['comandos_editor']['zip'] = ('Arquivo ativo', 'Baixar todos os XMLs (.zip)', '', baixar_zip)
                 ui.button(icon='folder_zip', on_click=baixar_zip).props('flat dense round size=sm') \
                     .tooltip('Baixar todos os XMLs corrigidos (.ZIP)')
 
@@ -3046,17 +3000,6 @@ def construir_editor_xml(estado, editores, resultado, barra_controle, ponto_aba=
         definir_conteudo(padrao.sub(lambda _m: novo, ed['texto_atual']))
         resultado_busca.text = f"{qtd} {_plural(qtd, 'ocorrência substituída', 'ocorrências substituídas')}."
     botao_sub_todos.on('click', substituir_todos)
-
-    # Atalhos para a paleta de comandos (Ctrl+K): cada um chama a função do botão.
-    estado['comandos_editor'].update({
-        'baixar': ('Arquivo ativo', 'Baixar XML', 'Ctrl+S', baixar),
-        'validar': ('Arquivo ativo', 'Validar XML', '', validar),
-        'recarregar': ('Arquivo ativo', 'Recarregar arquivo (descarta alterações)', '', recarregar),
-        'localizar': ('Editor', 'Localizar e substituir', 'Ctrl+F', abrir_barra_localizar),
-        'desfazer': ('Editor', 'Desfazer', '', desfazer),
-        'refazer': ('Editor', 'Refazer', '', refazer),
-        'copiar': ('Editor', 'Copiar código-fonte', '', copiar),
-    })
 
     atualizar_interface()
 
