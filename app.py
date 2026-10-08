@@ -1189,6 +1189,41 @@ def _notificar(mensagem, **kwargs):
     return ui.notify(mensagem, **kwargs)
 
 
+def _plural(n, singular, plural):
+    """Escolhe singular/plural pelo número: _plural(1, 'alteração', 'alterações')."""
+    return singular if n == 1 else plural
+
+
+# Erros do leitor de XML (em inglês) -> explicação em português.
+_TRADUCOES_ERRO_XML = [
+    ('mismatched tag', 'Tag de fechamento diferente da de abertura'),
+    ('not well-formed (invalid token)', 'Caractere inválido ou fora de lugar'),
+    ('not well-formed', 'XML mal formado'),
+    ('unclosed token', 'Tag ou trecho sem fechamento'),
+    ('no element found', 'O XML está vazio ou termina antes de fechar todas as tags'),
+    ('junk after document element', 'Há conteúdo depois da tag final do documento'),
+    ('duplicate attribute', 'Atributo repetido na mesma tag'),
+    ('unbound prefix', 'Prefixo de namespace (como ans:) não declarado'),
+    ('undefined entity', 'Símbolo "&" sem correspondência (para escrever o caractere &, use &amp;)'),
+    ('unclosed CDATA section', 'Seção CDATA sem fechamento'),
+    ('XML or text declaration not at start of entity', 'Declaração <?xml ...?> fora do início do arquivo'),
+    ('syntax error', 'Erro de sintaxe'),
+]
+
+
+def _traduzir_erro_xml(texto):
+    """Traduz as mensagens mais comuns do leitor de XML e mostra a posição como
+    'linha N, coluna M' (coluna contada a partir de 1, como no editor). Mensagens
+    desconhecidas voltam como vieram."""
+    texto = str(texto)
+    for original, pt in _TRADUCOES_ERRO_XML:
+        if texto.startswith(original):
+            m = re.search(r'line (\d+), column (\d+)', texto)
+            pos = f" (linha {m.group(1)}, coluna {int(m.group(2)) + 1})" if m else ''
+            return pt + pos
+    return texto
+
+
 def _hash_curto(h):
     """Versão abreviada do hash para a barra de status (o valor completo fica
     no tooltip e é o que vai para a área de transferência ao clicar)."""
@@ -1297,7 +1332,7 @@ TITULOS_AMIGAVEIS_AUDITORIA = {
     'oxigenio': 'Tempos de Oxigênio Recalculados',
     'conveniados_excluidos': 'Médicos Conveniados Removidos',
     'procedimentos_ajustados': 'Procedimentos Ajustados (Grau/Via/Técnica)',
-    'guias_blindadas': 'Guia(s) Blindada(s)',
+    'guias_blindadas': 'Guias Blindadas',
     'erros': 'Avisos e Erros Durante o Processamento',
     'valores_negativos': 'Valores Negativos Corrigidos',
     'motivo_encerramento': f"Motivo de Encerramento ({', '.join(str(c) for c in MOTIVOS_ENCERRAMENTO_PARA_12)} ➔ 12)",
@@ -1317,22 +1352,22 @@ ui.add_head_html("""
 <style>
     :root {
         --tiss-accent: #2563eb;
-        --tiss-accent-suave: #e8effd;
+        --tiss-accent-suave: #edf2fd;
         --tiss-borda: #dde3ec;
         --tiss-bg: #f3f5f9;
         --tiss-bg-painel: #ffffff;
         --tiss-bg-editor: #ffffff;
         --tiss-texto: #334155;
         --tiss-texto-forte: #0f172a;
-        --tiss-texto-suave: #64748b;
+        --tiss-texto-suave: #556176;
         --tiss-sombra: rgba(15, 23, 42, 0.05);
         --tiss-sombra-hover: rgba(15, 23, 42, 0.08);
         --tiss-diff-bg: #fffbeb;
         --tiss-diff-borda: #d97706;
         --tiss-diff-linha: #92400e;
-        --tiss-ok: #15803d;
+        --tiss-ok: #166f37;
         --tiss-erro: #b91c1c;
-        --tiss-aviso: #b45309;
+        --tiss-aviso: #a14a07;
         --tiss-mono: 'Cascadia Mono', 'JetBrains Mono', Consolas, 'SF Mono', Menlo, monospace;
     }
     /* Tema escuro: aplicado quando o Quasar liga o dark mode (ver botão de
@@ -1363,14 +1398,15 @@ ui.add_head_html("""
         background-color: var(--tiss-bg) !important;
         font-family: 'Segoe UI Variable', 'Segoe UI', Inter, system-ui, -apple-system, Roboto, sans-serif;
         font-size: 13px;
+        font-variant-numeric: tabular-nums;
         transition: background-color .15s ease;
     }
     .q-layout, .q-page-container { height: 100dvh; min-height: 0 !important; }
     .q-page { height: 100dvh !important; min-height: 0 !important; }
     .nicegui-content {
         height: 100%;
-        padding: 8px 12px 6px !important;
-        gap: 6px !important;
+        padding: 6px 12px 4px !important;
+        gap: 4px !important;
         display: flex;
         flex-direction: column;
         flex-wrap: nowrap;
@@ -1385,11 +1421,15 @@ ui.add_head_html("""
     }
 
     /* ---------- Barra superior da aplicação ---------- */
-    .tiss-appbar, .tiss-controlbar, .tiss-statusbar, .tiss-mensagens, .tiss-barra-localizar {
-        background-color: var(--tiss-bg-painel);
-        border: 1px solid var(--tiss-borda);
-        border-radius: 8px;
-        box-shadow: 0 1px 2px var(--tiss-sombra);
+    /* As barras (topo, abas, controles, status, mensagens) são "chrome" plano,
+       sobre o fundo da página, sem caixa própria: só o EDITOR tem moldura e
+       sombra, para ser o elemento em destaque da tela. */
+    .tiss-appbar, .tiss-abasbar, .tiss-controlbar, .tiss-statusbar, .tiss-mensagens {
+        background: transparent; border: 0; border-radius: 0; box-shadow: none;
+    }
+    .tiss-barra-localizar {
+        background-color: var(--tiss-accent-suave);
+        border: 1px solid var(--tiss-borda); border-radius: 6px; box-shadow: none;
     }
     .tiss-appbar {
         position: relative;
@@ -1399,6 +1439,7 @@ ui.add_head_html("""
         min-height: 40px;
         flex-wrap: nowrap !important;
         align-items: center !important;
+        border-bottom: 1px solid var(--tiss-borda);
     }
     .tiss-brand-icon { color: var(--tiss-accent); font-size: 20px; }
     .tiss-app-name { font-weight: 700; color: var(--tiss-texto-forte); font-size: 14px; letter-spacing: .01em; margin-right: 6px; }
@@ -1416,7 +1457,7 @@ ui.add_head_html("""
         padding: 0 4px 0 10px; min-height: 28px; align-items: center;
     }
     .tiss-upload .q-uploader__subtitle { display: none; }
-    .tiss-upload .q-uploader__title { font-size: 12.5px; font-weight: 600; line-height: 1.2; }
+    .tiss-upload .q-uploader__title { font-size: 13px; font-weight: 600; line-height: 1.2; }
     .tiss-upload .q-btn { color: var(--tiss-accent) !important; }
 
     /* ---------- Barra de controle: arquivo, senha, carteira, edição ---------- */
@@ -1429,14 +1470,13 @@ ui.add_head_html("""
     }
     /* Linha de abas dos arquivos */
     .tiss-abasbar {
-        flex: 0 0 auto; padding: 0 8px 0 4px; gap: 6px !important;
+        flex: 0 0 auto; padding: 0 8px 0 0; gap: 6px !important;
         flex-wrap: nowrap !important; align-items: center !important;
-        background-color: var(--tiss-bg-painel); border: 1px solid var(--tiss-borda);
-        border-radius: 8px; box-shadow: 0 1px 2px var(--tiss-sombra);
     }
     .tiss-abas { flex: 1 1 0; min-width: 0; }
-    .tiss-abas .q-tab { min-height: 34px; padding: 0 14px; font-size: 12.5px; color: var(--tiss-texto-suave); }
+    .tiss-abas .q-tab { min-height: 34px; padding: 0 14px; font-size: 13px; color: var(--tiss-texto-suave); }
     .tiss-abas .q-tab:hover { color: var(--tiss-texto-forte); }
+    .tiss-abas .q-tab { border-radius: 6px 6px 0 0; }
     .tiss-abas .q-tab--active { background-color: var(--tiss-accent-suave); }
     .tiss-aba-fechar { margin-left: 8px; margin-right: -6px; opacity: .55; }
     .tiss-aba-fechar:hover { opacity: 1; color: var(--tiss-erro); }
@@ -1444,7 +1484,8 @@ ui.add_head_html("""
     .tiss-campo { width: 150px; flex: 0 1 150px; min-width: 100px; }
     .tiss-campo-senha { width: 150px; flex: 0 1 150px; }
     .tiss-campo-carteira { width: 235px; flex: 0 1 235px; min-width: 170px; }
-    .tiss-campo input { font-family: var(--tiss-mono); font-size: 12.5px; }
+    .tiss-campo input { font-family: var(--tiss-mono); font-size: 13px; }
+    .tiss-controlbar .q-field--outlined .q-field__control { background: var(--tiss-bg-painel); }
     .tiss-controlbar .q-field--dense .q-field__control,
     .tiss-controlbar .q-field--dense .q-field__marginal { height: 34px; }
     .tiss-controlbar .q-field__label { font-size: 12px; }
@@ -1456,7 +1497,7 @@ ui.add_head_html("""
     /* ---------- Área de trabalho (ocupa todo o espaço restante) ---------- */
     .tiss-corpo {
         flex: 1 1 0; min-height: 0; width: 100%;
-        display: flex; flex-direction: column; gap: 6px !important; flex-wrap: nowrap;
+        display: flex; flex-direction: column; gap: 4px !important; flex-wrap: nowrap;
     }
     .tiss-workspace {
         flex: 1 1 0; min-height: 0; width: 100%;
@@ -1484,19 +1525,18 @@ ui.add_head_html("""
         flex: 0 0 290px; width: 290px; min-height: 0;
         background-color: var(--tiss-bg-painel);
         border: 1px solid var(--tiss-borda); border-radius: 8px;
-        box-shadow: 0 1px 2px var(--tiss-sombra);
         padding: 6px 8px; gap: 4px !important; flex-wrap: nowrap;
     }
-    .tiss-diff-titulo { font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--tiss-texto-suave); }
+    .tiss-diff-titulo { font-size: 13px; font-weight: 600; color: var(--tiss-texto-forte); }
     .tiss-diff-lista { flex: 1 1 0; min-height: 0; overflow-y: auto; }
     .diff-item {
         border-left: 3px solid var(--tiss-diff-borda);
         background-color: var(--tiss-diff-bg);
         padding: 5px 8px; margin-bottom: 5px; border-radius: 5px; font-size: 12px;
     }
-    .diff-linha { color: var(--tiss-diff-linha); font-weight: 700; font-size: 10.5px; }
+    .diff-linha { color: var(--tiss-diff-linha); font-weight: 700; font-size: 12px; }
     .diff-campo { color: var(--tiss-texto-forte); font-weight: 600; }
-    .diff-valores { color: var(--tiss-texto-suave); font-family: var(--tiss-mono); font-size: 11px; word-break: break-all; }
+    .diff-valores { color: var(--tiss-texto-suave); font-family: var(--tiss-mono); font-size: 12px; word-break: break-all; }
 
     /* Barra de Localizar/Substituir (oculta até o botão de busca ser clicado) */
     .tiss-barra-localizar { flex: 0 0 auto; padding: 4px 8px; background-color: var(--tiss-accent-suave); }
@@ -1517,14 +1557,14 @@ ui.add_head_html("""
         content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
         background: currentColor; margin-right: 6px; vertical-align: 1px;
     }
-    .tiss-hash code { font-family: var(--tiss-mono); font-size: 11.5px; color: var(--tiss-texto); background: none; padding: 0; }
+    .tiss-hash code { font-family: var(--tiss-mono); font-size: 12px; color: var(--tiss-texto); background: none; padding: 0; }
     .tiss-hash code.dif { color: var(--tiss-aviso); font-weight: 600; }
     .tiss-hash .sep { display: inline-block; width: 1px; height: 11px; background: var(--tiss-borda); margin: 0 10px; vertical-align: -1px; }
 
     /* ---------- Painel de Mensagens (retrátil, rolagem interna) ---------- */
-    .tiss-mensagens { flex: 0 0 auto; padding: 0; overflow: hidden; }
+    .tiss-mensagens { flex: 0 0 auto; padding: 0; overflow: hidden; border-top: 1px solid var(--tiss-borda); }
     .tiss-mensagens .q-item { min-height: 32px; padding: 0 12px; }
-    .tiss-mensagens-titulo { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--tiss-texto-suave); }
+    .tiss-mensagens-titulo { font-size: 13px; font-weight: 600; color: var(--tiss-texto-forte); }
     .tiss-mensagens-corpo {
         max-height: min(22vh, 200px); overflow-y: auto;
         padding: 4px 14px 8px; gap: 2px !important;
@@ -1532,8 +1572,8 @@ ui.add_head_html("""
     }
     .tiss-mensagens-corpo .q-icon { font-size: 16px; }
     .tiss-mensagens-corpo .linha { gap: 8px !important; flex-wrap: nowrap !important; align-items: center !important; }
-    .tiss-msg-ok { color: var(--tiss-ok); font-weight: 600; font-size: 12.5px; }
-    .tiss-msg-erro { color: var(--tiss-erro); font-weight: 600; font-size: 12.5px; }
+    .tiss-msg-ok { color: var(--tiss-ok); font-weight: 600; font-size: 13px; }
+    .tiss-msg-erro { color: var(--tiss-erro); font-weight: 600; font-size: 13px; }
     .tiss-msg-ok::before, .tiss-msg-erro::before {
         content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
         background: currentColor; margin-right: 6px; vertical-align: 1px;
@@ -1543,18 +1583,33 @@ ui.add_head_html("""
     .q-notifications__list--top { top: 138px !important; }
 
     /* Painel de alterações: só o trecho que mudou */
-    .diff-trecho { font-family: var(--tiss-mono); font-size: 11px; line-height: 1.45; word-break: break-all; color: var(--tiss-texto-suave); }
+    .diff-trecho { font-family: var(--tiss-mono); font-size: 12px; line-height: 1.45; word-break: break-all; color: var(--tiss-texto-suave); }
     .diff-trecho .rot { display: inline-block; width: 38px; font-family: inherit; font-weight: 700; opacity: .8; }
     .diff-trecho .del { background: rgba(220, 38, 38, .16); color: var(--tiss-texto-forte); border-radius: 3px; padding: 0 2px; }
     .diff-trecho .add { background: rgba(22, 163, 74, .18); color: var(--tiss-texto-forte); border-radius: 3px; padding: 0 2px; }
     .diff-trecho .vazio { font-style: italic; opacity: .7; }
 
     /* Hash abreviado, clicável para copiar */
-    .tiss-hash { margin-left: auto; gap: 6px !important; flex: 0 0 auto; flex-wrap: nowrap !important; align-items: center !important; font-size: 11.5px; }
+    .tiss-hash { margin-left: auto; gap: 6px !important; flex: 0 0 auto; flex-wrap: nowrap !important; align-items: center !important; font-size: 12px; }
     .tiss-hash-rot { color: var(--tiss-texto-suave); }
     .tiss-hash-val { font-family: var(--tiss-mono); color: var(--tiss-texto); cursor: pointer; border-radius: 4px; padding: 0 3px; }
     .tiss-hash-val:hover { background: var(--tiss-accent-suave); color: var(--tiss-accent); }
     .tiss-hash-val.dif { color: var(--tiss-aviso); font-weight: 600; }
+
+    /* Escala de textos da interface: 12 (secundário), 13 (corpo), 14 (destaque) */
+    .text-xs { font-size: 12px !important; line-height: 1.4 !important; }
+    .text-sm { font-size: 13px !important; line-height: 1.45 !important; }
+    .text-base { font-size: 14px !important; line-height: 1.45 !important; }
+
+    /* ---------- Acessibilidade: foco visível pelo teclado e movimento reduzido ---------- */
+    .q-btn:focus-visible, .q-tab:focus-visible, .q-item:focus-visible, .tiss-hash-val:focus-visible,
+    .tiss-upload .q-btn:focus-visible {
+        outline: 2px solid var(--tiss-accent); outline-offset: 1px; border-radius: 6px;
+    }
+    .q-field--focused .q-field__control:after { border-width: 2px; }
+    @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
+    }
 
     /* Estado vazio (nenhum arquivo carregado) */
     .tiss-vazio { flex: 1 1 0; color: var(--tiss-texto-suave); gap: 4px !important; }
@@ -1687,14 +1742,14 @@ def pagina_principal():
         painel_avisos_sheets.refresh()
         if novos_avisos:
             _notificar(
-                f"Regras recarregadas com {len(novos_avisos)} aviso(s) — veja o ícone de aviso na barra superior. "
-                "Lotes já processados NÃO são reprocessados automaticamente.",
+                f"Regras recarregadas com {len(novos_avisos)} {_plural(len(novos_avisos), 'aviso', 'avisos')}. "
+                "Veja o ícone de aviso na barra superior. Lotes já processados não são reprocessados automaticamente.",
                 type='warning', multi_line=True,
             )
         else:
             _notificar(
-                "Regras recarregadas da planilha com sucesso. Lotes já processados NÃO são "
-                "reprocessados automaticamente — reenvie os arquivos se precisar aplicar a mudança.",
+                "Regras recarregadas da planilha. Lotes já processados não são reprocessados "
+                "automaticamente; reenvie os arquivos se precisar aplicar a mudança.",
                 type='positive', multi_line=True,
             )
 
@@ -1709,7 +1764,7 @@ def pagina_principal():
                 ui.tooltip('Avisos ao carregar as regras do Google Sheets')
                 with ui.menu().props('max-width=560px'):
                     with ui.column().classes('gap-1 p-3'):
-                        ui.label(f"{len(estado['avisos_sheets'])} aviso(s) ao carregar as regras do Google Sheets").classes('text-sm font-semibold')
+                        ui.label(f"{len(estado['avisos_sheets'])} {_plural(len(estado['avisos_sheets']), 'aviso', 'avisos')} ao carregar as regras do Google Sheets").classes('text-sm font-semibold')
                         for a in estado['avisos_sheets']:
                             ui.label(f"• {a}").classes('text-xs text-amber-700')
 
@@ -1751,9 +1806,11 @@ def construir_aba_processamento(estado, editores, barra_app, corpo):
 
     with barra_app:
         ui.separator().props('vertical inset')
-        ui.upload(on_multi_upload=ao_receber_upload, multiple=True, auto_upload=True) \
+        _upload = ui.upload(on_multi_upload=ao_receber_upload, multiple=True, auto_upload=True)
+        estado['upload_id'] = _upload.id
+        _upload \
             .props('accept=.xml flat label="Enviar XML"').classes('tiss-upload') \
-            .tooltip('Selecione ou arraste um ou vários XMLs — a correção roda automaticamente')
+            .tooltip('Selecione um ou vários XMLs. A correção roda automaticamente.')
 
         async def iniciar_correcao():
             if not estado['arquivos_pendentes']:
@@ -1780,7 +1837,7 @@ def construir_aba_processamento(estado, editores, barra_app, corpo):
                         nome_frag = f"{prefixo_frag}_{frag['numero_lote'] or frag['prestador']}{extensao_original or '.xml'}"
                         auditoria_frag = {chave: [] for chave in auditoria}
                         auditoria_frag['fragmentados'] = [
-                            f"Procedimento {item['cod_proc']} (Plano {item['plano']}) — origem: '{nome}'."
+                            f"Procedimento {item['cod_proc']} (Plano {item['plano']}). Origem: '{nome}'."
                             for item in frag['itens']
                         ]
                         resultados.append({
@@ -1862,8 +1919,12 @@ def painel_resultados(estado, editores):
     if not resultados:
         with ui.column().classes('tiss-vazio w-full items-center justify-center'):
             ui.icon('upload_file').classes('text-5xl')
-            ui.label('Nenhum arquivo carregado').classes('text-base font-semibold')
-            ui.label('Use "Enviar XML" na barra superior para começar.').classes('text-sm')
+            ui.label('Envie os XMLs para começar').classes('text-base font-semibold')
+            ui.label('A correção roda automaticamente assim que os arquivos chegam.').classes('text-sm')
+            botao_vazio = ui.button('Selecionar XMLs', icon='upload_file').props('unelevated no-caps color=primary').classes('mt-2')
+            if estado.get('upload_id'):
+                # js_handler: o seletor abre no próprio clique (sem ida e volta ao servidor).
+                botao_vazio.on('click', js_handler=f"() => getElement({estado['upload_id']}).$refs.qRef.pickFiles()")
         return
 
     sucesso = [r for r in resultados if not r.get('falha_total')]
@@ -1871,7 +1932,7 @@ def painel_resultados(estado, editores):
 
     with ui.column().classes('tiss-workspace') as area_trabalho:
         if falhas:
-            with ui.expansion(f'{len(falhas)} arquivo(s) com falha total', icon='error', value=True).props('dense').classes('w-full tiss-mensagens'):
+            with ui.expansion(f"{len(falhas)} {_plural(len(falhas), 'arquivo com falha total', 'arquivos com falha total')}", icon='error', value=True).props('dense').classes('w-full tiss-mensagens'):
                 with ui.column().classes('tiss-mensagens-corpo w-full'):
                     for r in falhas:
                         ui.label(f"{r['nome']}: {r['falha_total']}").classes('text-sm text-red-700')
@@ -1959,44 +2020,62 @@ def painel_resultados(estado, editores):
 # EDITOR DE XML ESTILO DESKTOP (controles + editor/painel + status + mensagens)
 # — usa as MESMAS funções de negócio já validadas na versão Streamlit.
 # ==========================================================================
+def _padrao_busca(termo):
+    """Padrão de busca do Localizar/Substituir: texto literal (sem interpretar
+    caracteres especiais) e SEM diferenciar maiúsculas de minúsculas."""
+    return re.compile(re.escape(termo), re.IGNORECASE)
+
+
+def _escapar_para_js_regex(termo):
+    """Escapa os caracteres especiais de expressão regular para o JavaScript
+    tratar o termo digitado como texto literal."""
+    return re.sub(r'([.*+?^${}()|\[\]\\])', r'\\\1', termo)
+
+
 def _js_navegar_ocorrencia(id_editor, termo, direcao):
     """JavaScript que seleciona, no editor CodeMirror, a próxima (direcao=1) ou
     a anterior (direcao=-1) ocorrência de `termo`, dando a volta no documento
     ao chegar ao fim/início. Trabalha direto no texto do editor (o que está na
-    tela), com a mesma regra do contador existente: diferencia maiúsculas de
+    tela), com a mesma regra do contador: NÃO diferencia maiúsculas de
     minúsculas e não conta ocorrências sobrepostas. Devolve {total, atual}.
     É só navegação visual: não altera o texto."""
     import json as _json
-    return f"""
-    (() => {{
-        const ed = getElement({int(id_editor)}).editor;
+    modelo = """
+    (() => {
+        const ed = getElement(__ID__).editor;
         if (!ed) return null;
-        const termo = {_json.dumps(termo)};
-        const direcao = {int(direcao)};
+        const padrao = __PADRAO__;
+        const direcao = __DIRECAO__;
         const doc = ed.state.doc.toString();
-        const pos = [];
-        let i = 0;
-        while ((i = doc.indexOf(termo, i)) !== -1) {{ pos.push(i); i += termo.length; }}
-        if (!pos.length) return {{ total: 0, atual: 0 }};
+        const re = new RegExp(padrao, 'gi');
+        const achados = [];
+        for (const m of doc.matchAll(re)) {
+            if (m[0].length === 0) break;
+            achados.push({ de: m.index, tam: m[0].length });
+        }
+        if (!achados.length) return { total: 0, atual: 0 };
         const sel = ed.state.selection.main;
         let k;
-        if (direcao > 0) {{
-            k = pos.findIndex(p => p >= sel.to);
+        if (direcao > 0) {
+            k = achados.findIndex(a => a.de >= sel.to);
             if (k === -1) k = 0;
-        }} else {{
+        } else {
             k = -1;
-            for (let j = pos.length - 1; j >= 0; j--) {{
-                if (pos[j] + termo.length <= sel.from) {{ k = j; break; }}
-            }}
-            if (k === -1) k = pos.length - 1;
-        }}
-        ed.dispatch({{
-            selection: {{ anchor: pos[k], head: pos[k] + termo.length }},
+            for (let j = achados.length - 1; j >= 0; j--) {
+                if (achados[j].de + achados[j].tam <= sel.from) { k = j; break; }
+            }
+            if (k === -1) k = achados.length - 1;
+        }
+        ed.dispatch({
+            selection: { anchor: achados[k].de, head: achados[k].de + achados[k].tam },
             scrollIntoView: true,
-        }});
-        return {{ total: pos.length, atual: k + 1 }};
-    }})()
+        });
+        return { total: achados.length, atual: k + 1 };
+    })()
     """
+    return (modelo.replace('__ID__', str(int(id_editor)))
+                  .replace('__PADRAO__', _json.dumps(_escapar_para_js_regex(termo)))
+                  .replace('__DIRECAO__', str(int(direcao))))
 
 
 def construir_editor_xml(estado, editores, resultado, barra_controle):
@@ -2093,7 +2172,7 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
             _campos_topo[ignorar_chave] = False
             return
         if _extrair_primeiro(padrao, ed['texto_atual']) is None:
-            _notificar('Este arquivo não tem essa tag — nada para atualizar.', type='warning')
+            _notificar('Este arquivo não tem essa tag. Não há nada para atualizar.', type='warning')
             return
         novo_texto = _substituir_primeiro(padrao, ed['texto_atual'], novo_valor)
         if novo_texto != ed['texto_atual']:
@@ -2201,16 +2280,18 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
         status_alteracoes = ui.label()
         with ui.row().classes('tiss-hash'):
             ui.label('Hash original').classes('tiss-hash-rot')
-            hash_orig_lbl = ui.label().classes('tiss-hash-val')
+            hash_orig_lbl = ui.label().classes('tiss-hash-val').props('tabindex=0 role=button')
             with hash_orig_lbl:
                 tip_hash_orig = ui.tooltip('')
             ui.element('span').classes('sep')
             ui.label('Hash atual').classes('tiss-hash-rot')
-            hash_atual_lbl = ui.label().classes('tiss-hash-val')
+            hash_atual_lbl = ui.label().classes('tiss-hash-val').props('tabindex=0 role=button')
             with hash_atual_lbl:
                 tip_hash_atual = ui.tooltip('')
         hash_orig_lbl.on('click', lambda: _copiar_campo(ed['hash_original']))
         hash_atual_lbl.on('click', lambda: _copiar_campo(ed['hash_atual']))
+        hash_orig_lbl.on('keydown.enter', lambda: _copiar_campo(ed['hash_original']))
+        hash_atual_lbl.on('keydown.enter', lambda: _copiar_campo(ed['hash_atual']))
 
     # ---------------- Painel de Mensagens ----------------
     # Estilo checklist (como um validador de desktop): primeiro o que
@@ -2237,9 +2318,9 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
                 botao_ir_erro.set_visibility(False)
                 ui.space()
                 if total_correcoes:
-                    ui.badge(f'{total_correcoes} correção(ões)', color='primary').props('outline')
+                    ui.badge(f"{total_correcoes} {_plural(total_correcoes, 'correção', 'correções')}", color='primary').props('outline')
                 if aud.get('erros'):
-                    ui.badge(f"{len(aud['erros'])} aviso(s)", color='warning')
+                    ui.badge(f"{len(aud['erros'])} {_plural(len(aud['erros']), 'aviso', 'avisos')}", color='warning')
 
         with ui.column().classes('tiss-mensagens-corpo w-full'):
             with ui.row().classes('linha'):
@@ -2255,7 +2336,7 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
                     with ui.row().classes('linha'):
                         ui.icon('check_circle', color='positive')
                         ui.label(titulo_cat).classes('text-sm font-semibold')
-                        ui.label(f'{len(itens_cat)} item(ns)').classes('text-xs text-gray-500')
+                        ui.label(f"{len(itens_cat)} {_plural(len(itens_cat), 'item', 'itens')}").classes('text-xs text-gray-500')
                     with ui.column().classes('gap-0 ml-6'):
                         for item in itens_cat:
                             ui.label(f'• {item}').classes('text-xs text-gray-600')
@@ -2280,7 +2361,7 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
             if aud.get('erros'):
                 with ui.row().classes('linha mt-1'):
                     ui.icon('warning', color='warning')
-                    ui.label(f"{len(aud['erros'])} aviso(s)/erro(s) pontual(is) durante o processamento").classes('text-sm font-semibold text-amber-700')
+                    ui.label(f"{len(aud['erros'])} {_plural(len(aud['erros']), 'aviso ou erro pontual', 'avisos ou erros pontuais')} durante o processamento").classes('text-sm font-semibold text-amber-700')
                 with ui.column().classes('gap-0 ml-6'):
                     for item in aud['erros']:
                         ui.label(f'• {item}').classes('text-xs text-amber-700')
@@ -2288,7 +2369,7 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
             with ui.row().classes('linha mt-1'):
                 if aud.get('erros'):
                     ui.icon('warning', color='warning')
-                    ui.label('Processamento concluído com avisos — confira os itens acima.').classes('text-sm font-semibold')
+                    ui.label('Processamento concluído com avisos. Confira os itens acima.').classes('text-sm font-semibold')
                 else:
                     ui.icon('check_circle', color='positive')
                     ui.label('Processamento concluído com sucesso.').classes('text-sm font-semibold')
@@ -2323,7 +2404,7 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
         alteracoes = calcular_diff_alteracoes(ed['texto_base'], ed['texto_atual']) if alterado else []
         with painel_alteracoes:
             if alteracoes:
-                ui.label(f"{len(alteracoes)} alteração(ões)").classes('text-sm mb-2')
+                ui.label(f"{len(alteracoes)} {_plural(len(alteracoes), 'alteração', 'alterações')}").classes('text-sm mb-2')
                 for alt in alteracoes[:60]:
                     campo = alt['campo'] or '(trecho alterado)'
                     ctx_e, meio_a, meio_d, ctx_d = _recorte_diff(alt['antes'], alt['depois'])
@@ -2340,7 +2421,7 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
                     """)
             else:
                 ui.label('Nenhuma alteração realizada.').classes('text-sm text-gray-500')
-        status_alteracoes.text = (f"{len(alteracoes)} alteração(ões) não salva(s)" if alterado
+        status_alteracoes.text = (f"{len(alteracoes)} {_plural(len(alteracoes), 'alteração não salva', 'alterações não salvas')}" if alterado
                                    else ("Alterações salvas" if ed['salvo_alguma_vez'] else "Sem alterações"))
         status_alteracoes.classes(replace='tiss-st-sujo' if alterado else ('tiss-st-salvo' if ed['salvo_alguma_vez'] else 'tiss-st'))
         # O painel "Alterações manuais pendentes" só aparece quando há de
@@ -2392,9 +2473,9 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
 
         try:
             ET.fromstring(ed['texto_atual'].encode('ISO-8859-1'))
-            mensagem_validade.content = '<span class="tiss-msg-ok">Arquivo válido — nenhum erro de estrutura encontrado.</span>'
+            mensagem_validade.content = '<span class="tiss-msg-ok">Arquivo válido. Nenhum erro de estrutura encontrado.</span>'
         except Exception as e:
-            mensagem_validade.content = f'<span class="tiss-msg-erro">XML inválido — {html.escape(str(e))}</span>'
+            mensagem_validade.content = f'<span class="tiss-msg-erro">XML inválido: {html.escape(_traduzir_erro_xml(e))}</span>'
             # Posição do erro (ex.: "line 21, column 41") para o botão "Ir para a linha".
             achados = re.findall(r'line (\d+)(?:, column (\d+))?', str(e))
             if achados:
@@ -2418,8 +2499,8 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
         hash_orig_lbl.text = _hash_curto(h_orig)
         hash_atual_lbl.text = _hash_curto(h_atual)
         hash_atual_lbl.classes(replace='tiss-hash-val dif' if hash_dif else 'tiss-hash-val')
-        tip_hash_orig.text = f"{h_orig} — clique para copiar"
-        tip_hash_atual.text = f"{h_atual} — clique para copiar"
+        tip_hash_orig.text = f"{h_orig}. Clique para copiar."
+        tip_hash_atual.text = f"{h_atual}. Clique para copiar."
 
         _sincronizar_campos_topo()
 
@@ -2482,7 +2563,11 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
         novos_bytes, erro = validar_e_recalcular_xml_editado(ed['texto_atual'])
         if erro:
             ed['erro_validacao'] = erro
-            _notificar(f'{erro}', type='negative', multi_line=True, close_button=True)
+            prefixo_xml = 'XML inválido — não é possível salvar: '
+            if erro.startswith(prefixo_xml):
+                erro = ('Não foi possível baixar. XML inválido: '
+                        f'{_traduzir_erro_xml(erro[len(prefixo_xml):])}. Corrija o erro e baixe de novo.')
+            _notificar(erro, type='negative', multi_line=True, close_button=True)
             return
         # O texto do editor/estado fica só com \n (ver _normalizar_quebras_linha);
         # os bytes do arquivo para download (novos_bytes) mantêm as quebras originais.
@@ -2511,11 +2596,11 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
 
         if baixados_junto:
             _notificar(
-                f"Hash recalculado. Este arquivo foi fragmentado — baixado junto com: {', '.join(baixados_junto)}.",
+                f"XML baixado e hash recalculado. Este arquivo foi fragmentado; baixado junto com: {', '.join(baixados_junto)}.",
                 type='positive', multi_line=True,
             )
         else:
-            _notificar('Hash recalculado e download iniciado.', type='positive')
+            _notificar('XML baixado. Hash recalculado.', type='positive')
     botao_baixar.on('click', baixar)
 
     def desfazer(_=None):
@@ -2547,7 +2632,7 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
         # Só interrompe com uma confirmação se houver algo de fato a perder;
         # se o texto já está igual ao original, recarrega direto sem incomodar.
         if ed['texto_atual'] == ed['texto_original']:
-            _notificar('Nada para recarregar — o editor já está no estado original.', type='info')
+            _notificar('Nada para recarregar. O editor já está no estado original.', type='info')
             return
 
         with ui.dialog() as dialogo_recarregar, ui.card():
@@ -2565,9 +2650,10 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
         try:
             ed['texto_atual'].encode('ISO-8859-1')
             ET.fromstring(ed['texto_atual'].encode('ISO-8859-1'))
-            _notificar('XML válido', type='positive')
+            _notificar('XML válido.', type='positive')
         except Exception as e:
-            _notificar(f'XML inválido: {e}', type='negative')
+            dica = ' Use "Ir para a linha" no painel Mensagens.' if re.search(r'line \d+', str(e)) else ''
+            _notificar(f'XML inválido: {_traduzir_erro_xml(e)}.{dica}', type='negative', multi_line=True)
     botao_validar.on('click', validar)
 
     def copiar(_=None):
@@ -2580,8 +2666,8 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
         if not termo:
             resultado_busca.text = 'Informe o texto a localizar.'
             return
-        qtd = ed['texto_atual'].count(termo)
-        resultado_busca.text = f'{qtd} ocorrência(s) encontrada(s).'
+        qtd = len(_padrao_busca(termo).findall(ed['texto_atual']))
+        resultado_busca.text = f"{qtd} {_plural(qtd, 'ocorrência encontrada', 'ocorrências encontradas')}."
     botao_loc.on('click', localizar)
 
     def substituir_um(_=None):
@@ -2589,12 +2675,12 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
         if not termo:
             resultado_busca.text = 'Informe o texto a localizar.'
             return
-        pos = ed['texto_atual'].find(termo)
-        if pos == -1:
+        texto = ed['texto_atual']
+        achado = _padrao_busca(termo).search(texto)
+        if achado is None:
             resultado_busca.text = 'Nenhuma ocorrência encontrada.'
             return
-        texto = ed['texto_atual']
-        definir_conteudo(texto[:pos] + novo + texto[pos + len(termo):])
+        definir_conteudo(texto[:achado.start()] + novo + texto[achado.end():])
         resultado_busca.text = '1 ocorrência substituída.'
     botao_sub_um.on('click', substituir_um)
 
@@ -2627,9 +2713,10 @@ def construir_editor_xml(estado, editores, resultado, barra_controle):
         if not termo:
             resultado_busca.text = 'Informe o texto a localizar.'
             return
-        qtd = ed['texto_atual'].count(termo)
-        definir_conteudo(ed['texto_atual'].replace(termo, novo))
-        resultado_busca.text = f'{qtd} ocorrência(s) substituída(s).'
+        padrao = _padrao_busca(termo)
+        qtd = len(padrao.findall(ed['texto_atual']))
+        definir_conteudo(padrao.sub(lambda _m: novo, ed['texto_atual']))
+        resultado_busca.text = f"{qtd} {_plural(qtd, 'ocorrência substituída', 'ocorrências substituídas')}."
     botao_sub_todos.on('click', substituir_todos)
 
     atualizar_interface()
