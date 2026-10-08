@@ -96,7 +96,7 @@ def padronizar_codigo_8_digitos(cod):
 tabelas_padrao = {
     'troca_equipe_sadt': pd.DataFrame(columns=['Nome Original (Erro)', 'Nome Novo', 'CRM Novo', 'CBO Novo', 'Cód Operadora Novo', 'Grau Part Novo', 'Conselho Novo', 'UF Nova']),
     'medicos': pd.DataFrame(columns=['Nome do Médico', 'CBO Correto', 'Substituir por Cód. Operadora', 'Código na Operadora']),
-    'procedimentos': pd.DataFrame(columns=['Código do Procedimento', 'Grau Part Obrigatório (0 a 12 ou EXCLUIR)', 'Via de Acesso (1, 2 ou EXCLUIR)', 'Técnica (1, 2 ou EXCLUIR)']),
+    'procedimentos': pd.DataFrame(columns=['Código do Procedimento', 'Grau Part Obrigatório (0 a 12 ou EXCLUIR)', 'Via de Acesso (1, 2 ou EXCLUIR)', 'Técnica (1, 2, 3 ou EXCLUIR)']),
     'conveniados': pd.DataFrame(columns=['Nome do Médico Conveniado']),
     'blindagem': pd.DataFrame(columns=['Código Prestador Protegido', 'Tipo', 'Código']),
     'itens': pd.DataFrame(columns=['Código Incorreto', 'Código Correto']),
