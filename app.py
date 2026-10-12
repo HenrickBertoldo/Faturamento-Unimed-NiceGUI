@@ -457,6 +457,41 @@ def avisar_tags_vazias(guias, auditoria):
             f"Tag <{nome}> vazia em {len(refs)} ocorrência(s) (guias: {exemplos}). Não há regra de preenchimento; confira o arquivo.")
 
 
+# Valores aceitos em <codigoTabela>. Para aceitar outro, acrescente na lista.
+CODIGOS_TABELA_VALIDOS = ['18', '19', '20', '22', '99', '98', '00']
+
+
+def corrigir_codigo_tabela(root, auditoria):
+    """<codigoTabela> só aceita os valores de CODIGOS_TABELA_VALIDOS. Valor fora
+    da lista é trocado por um dos válidos ESCOLHIDO AO ACASO (a pedido do
+    usuário). Antes de sortear, tenta o caso simples de zero à esquerda
+    ('0' -> '00'); nesse caso não há sorteio. Tags vazias não são alteradas
+    (só avisa), porque não há valor a corrigir."""
+    import random
+    validos = list(CODIGOS_TABELA_VALIDOS)
+    logs, vazias = [], 0
+    for elem in root.iter():
+        if not isinstance(elem.tag, str) or elem.tag.split('}')[-1] != 'codigoTabela':
+            continue
+        valor = (elem.text or '').strip()
+        if not valor:
+            vazias += 1
+            continue
+        if valor in validos:
+            continue
+        ajustado = valor.zfill(2) if valor.isdigit() and len(valor) < 2 else None
+        if ajustado in validos:
+            novo, como = ajustado, "zero à esquerda"
+        else:
+            novo, como = random.choice(validos), "sorteado"
+        elem.text = novo
+        logs.append(f"Tag <codigoTabela>: {valor} ➔ {novo} ({como})")
+    auditoria.setdefault('codigo_tabela', []).extend(logs)
+    if vazias:
+        auditoria['erros'].append(f"Tag <codigoTabela> vazia em {vazias} ocorrência(s). Não foi alterada; confira o arquivo.")
+    return len(logs)
+
+
 def _somar_segundos(hora_str, segundos):
     """Soma 'segundos' a um horário HH:MM:SS, com rollover natural de minuto/hora
     (ex: 23:59:59 + 2s = 00:00:01)."""
@@ -773,7 +808,7 @@ def processar_xml_tiss(arquivo_xml, dfs):
         'cbos': [], 'medicos_trocados': [], 'itens': [], 'anvisa': [], 'unidades': [], 'oxigenio': [],
         'conveniados_excluidos': [], 'procedimentos_ajustados': [], 'guias_blindadas': [], 'erros': [],
         'valores_negativos': [], 'motivo_encerramento': [], 'horarios_duplicados': [], 'fragmentados': [],
-        'tipo_atendimento': [], 'tags_reparadas': []
+        'tipo_atendimento': [], 'tags_reparadas': [], 'codigo_tabela': []
     }
     
     arquivo_xml.seek(0)
@@ -1242,6 +1277,10 @@ def processar_xml_tiss(arquivo_xml, dfs):
     # --- RECALCULO DE HASH (algoritmo OFICIAL da ANS: MD5 da concatenação do
     # conteúdo dos elementos-folha, na ordem do documento — não depende de
     # nenhum detalhe de formatação/serialização do XML) ---
+    # Código de tabela: roda depois de todas as regras (inclusive trocas de itens) e
+    # antes do hash e dos fragmentos, para que ambos já saiam com o valor corrigido.
+    corrigir_codigo_tabela(root, auditoria)
+
     xml_bytes = recalcular_hash_e_serializar(tree, root)
 
     # 🆕 NOVA REGRA: gera um XML de honorários por prestador que recebeu ao
@@ -1437,6 +1476,7 @@ TITULOS_AMIGAVEIS_AUDITORIA = {
     'motivo_encerramento': f"Motivo de Encerramento ({', '.join(str(c) for c in MOTIVOS_ENCERRAMENTO_PARA_12)} ➔ 12)",
     'tipo_atendimento': 'Tipo de Atendimento SADT (05 ➔ 02)',
     'tags_reparadas': 'Tags Vazias ou Ausentes Reparadas',
+    'codigo_tabela': 'Código de Tabela Inválido Corrigido',
     'horarios_duplicados': 'Horários Escalonados (Anti-Duplicidade)',
     'fragmentados': 'Procedimentos Fragmentados para Outro Prestador'
 }
@@ -2091,7 +2131,9 @@ def construir_aba_processamento(estado, editores, barra_app, corpo):
             for i, (nome, conteudo) in enumerate(pendentes):
                 resultado = {'nome': nome, 'xml_bytes': None, 'auditoria': None, 'falha_total': None}
                 try:
-                    xml_resultado, auditoria, fragmentos = processar_xml_tiss(io.BytesIO(conteudo), estado['dfs'])
+                    # Em thread separada: o processamento é pesado e, rodando direto, congelaria a tela de todos.
+                    xml_resultado, auditoria, fragmentos = await asyncio.to_thread(
+                        processar_xml_tiss, io.BytesIO(conteudo), estado['dfs'])
                     resultado['xml_bytes'] = xml_resultado
                     resultado['auditoria'] = auditoria
                     resultados.append(resultado)
@@ -2743,16 +2785,9 @@ def construir_editor_xml(estado, editores, resultado, barra_controle, ponto_aba=
         """)
     botao_ir_erro.on('click.stop', ir_para_erro)
 
-    def atualizar_interface(recalcular_diff=True):
-        alterado = ed['texto_atual'] != ed['texto_base']
-        label_arquivo.text = f"{nome_arquivo} *" if alterado else nome_arquivo
-        label_arquivo.classes(replace='tiss-file-name modificado' if alterado else 'tiss-file-name')
-        if ponto_aba is not None:
-            ponto_aba.set_visibility(alterado)
-
-        botao_desfazer.set_enabled(bool(ed['historico']))
-        botao_refazer.set_enabled(bool(ed['futuro']))
-
+    def _atualizar_validade_e_linhas():
+        # Parte CARA da atualização (reanalisa o XML inteiro e conta as linhas):
+        # roda só quando a digitação faz uma pausa, e não a cada tecla.
         try:
             ET.fromstring(ed['texto_atual'].encode('ISO-8859-1'))
             mensagem_validade.content = '<span class="tiss-msg-ok">Arquivo válido. Nenhum erro de estrutura encontrado.</span>'
@@ -2775,6 +2810,16 @@ def construir_editor_xml(estado, editores, resultado, barra_controle, ponto_aba=
 
         status_linhas.text = f"{len(ed['texto_atual'].splitlines())} linhas"
 
+    def atualizar_interface(recalcular_diff=True):
+        alterado = ed['texto_atual'] != ed['texto_base']
+        label_arquivo.text = f"{nome_arquivo} *" if alterado else nome_arquivo
+        label_arquivo.classes(replace='tiss-file-name modificado' if alterado else 'tiss-file-name')
+        if ponto_aba is not None:
+            ponto_aba.set_visibility(alterado)
+
+        botao_desfazer.set_enabled(bool(ed['historico']))
+        botao_refazer.set_enabled(bool(ed['futuro']))
+
         hash_dif = ed['hash_atual'] != ed['hash_original']
         h_orig = ed['hash_original'] or '—'
         h_atual = ed['hash_atual'] or '—'
@@ -2791,6 +2836,7 @@ def construir_editor_xml(estado, editores, resultado, barra_controle, ponto_aba=
         ui.run_javascript(f"window.__validadorTissAlterado = {str(alterado).lower()};")
 
         if recalcular_diff:
+            _atualizar_validade_e_linhas()
             atualizar_painel_diff(alterado)
 
     # ---------------- Eventos ----------------
@@ -2800,6 +2846,7 @@ def construir_editor_xml(estado, editores, resultado, barra_controle, ponto_aba=
         # Marca o fim da pausa de digitação: a próxima tecla começa uma nova
         # rajada (e portanto um novo checkpoint de desfazer).
         _debounce['em_rajada'] = False
+        _atualizar_validade_e_linhas()
         atualizar_painel_diff(alterado)
 
     def ao_digitar(e):
@@ -2824,8 +2871,8 @@ def construir_editor_xml(estado, editores, resultado, barra_controle, ponto_aba=
             _debounce['em_rajada'] = True
 
         ed['texto_atual'] = e.value
-        # Atualização leve (label, botões, validade, status) a cada tecla —
-        # é barata. O recálculo do diff (caro) é adiado: se o usuário digitar
+        # Atualização leve (rótulo, botões, hash) a cada tecla. A validade do XML
+        # e a contagem de linhas (caras em arquivos grandes) ficam para a pausa. O recálculo do diff (caro) é adiado: se o usuário digitar
         # de novo antes de 0.5s passar, o cálculo pendente é cancelado e
         # reagendado, então só roda de fato quando a digitação faz uma pausa.
         # É também essa mesma pausa que fecha a rajada atual do undo.
@@ -2836,13 +2883,14 @@ def construir_editor_xml(estado, editores, resultado, barra_controle, ponto_aba=
         _debounce['timer'] = ui.timer(0.5, lambda: _fim_da_rajada(alterado), once=True)
     editor.on_value_change(ao_digitar)
 
-    def baixar(_=None):
+    async def baixar(_=None):
         # Antes existiam dois botões (Salvar e Baixar) fazendo praticamente
         # a mesma coisa. Agora "Baixar" sozinho: valida o texto atual do
         # editor, recalcula o hash oficial da ANS e já dispara o download —
         # funciona tanto para um arquivo sem edição manual (baixa o já
         # corrigido automaticamente) quanto para um que foi editado à mão.
-        novos_bytes, erro = validar_e_recalcular_xml_editado(ed['texto_atual'])
+        # Em thread separada (arquivos grandes levam centenas de ms para validar e recalcular o hash).
+        novos_bytes, erro = await asyncio.to_thread(validar_e_recalcular_xml_editado, ed['texto_atual'])
         if erro:
             ed['erro_validacao'] = erro
             prefixo_xml = 'XML inválido — não é possível salvar: '
